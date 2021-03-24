@@ -12,12 +12,12 @@ import scala.collection.mutable
 import scala.util.Random
 
 class WorkerActor[ConfigType <: XinukConfig](
-  regionRef: => ActorRef,
-  planCreator: PlanCreator[ConfigType],
-  planResolver: PlanResolver[ConfigType],
-  emptyMetrics: => Metrics,
-  signalPropagation: SignalPropagation
-)(implicit config: ConfigType) extends Actor with Stash {
+                                              regionRef: => ActorRef,
+                                              planCreator: PlanCreator[ConfigType],
+                                              planResolver: PlanResolver[ConfigType],
+                                              emptyMetrics: => Metrics,
+                                              signalPropagation: SignalPropagation
+                                            )(implicit config: ConfigType) extends Actor with Stash {
 
   import pl.edu.agh.xinuk.simulation.WorkerActor._
 
@@ -32,6 +32,10 @@ class WorkerActor[ConfigType <: XinukConfig](
   var worldShard: WorldShard = _
   var iterationMetrics: Metrics = _
   var currentIteration: Long = _
+  var iterationTime: Long = _
+  var planTimeAvg: Double = _
+  var consequenceTimeAvg: Double = _
+  var balancer: BalancerAlgorithm = _
 
   override def receive: Receive = stopped
 
@@ -45,6 +49,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       this.worldShard = world
       this.logger = LoggerFactory.getLogger(id.value.toString)
       logger.info("starting")
+      this.balancer = new BalancerAlgorithm(worldShard)
       planCreator.initialize(worldShard)
       self ! StartIteration(1)
       unstashAll()
@@ -68,10 +73,21 @@ class WorkerActor[ConfigType <: XinukConfig](
       context.system.terminate()
 
     case StartIteration(iteration) =>
+      iterationTime = System.currentTimeMillis()
       currentIteration = iteration
       iterationMetrics = emptyMetrics
       val plans: Seq[TargetedPlan] = worldShard.localCellIds.map(worldShard.cells(_)).flatMap(createPlans).toSeq
       distributePlans(currentIteration, plans)
+      if(iteration > 0){
+        planTimeAvg = (planTimeAvg * (iteration-1) + (System.currentTimeMillis() - iterationTime))/iteration
+        logger.info("RemotePlans: " + planTimeAvg)
+        if(iteration % 10 == 0) {
+          distribute(
+            balancer.worldShard.outgoingWorkerNeighbours,
+            balancer.worldShard.outgoingWorkerNeighbours.zip(List.fill(worldShard.outgoingWorkerNeighbours.size)(planTimeAvg)).toMap)(
+            0.0, { time => Statistics(this.id, time) })
+        }
+      }
 
     case RemotePlans(iteration, remotePlans) =>
       plansStash(iteration) :+= remotePlans
@@ -86,6 +102,8 @@ class WorkerActor[ConfigType <: XinukConfig](
     case RemoteConsequences(iteration, remoteConsequences) =>
       consequencesStash(iteration) :+= remoteConsequences
       if (consequencesStash(currentIteration).size == worldShard.incomingWorkerNeighbours.size) {
+        //        consequenceTimeAvg = (consequenceTimeAvg * (iteration-1) + (System.currentTimeMillis() - iterationTime)) / iteration
+        //        logger.info("RemoteConsequences: " + (consequenceTimeAvg))
         val consequences: Seq[TargetedStateUpdate] = flatGroup(consequencesStash(currentIteration))(_.target).flatMap(_._2).toSeq
         consequences.foreach(applyUpdate)
         consequencesStash.remove(currentIteration)
@@ -97,6 +115,7 @@ class WorkerActor[ConfigType <: XinukConfig](
     case RemoteSignal(iteration, remoteSignalUpdates) =>
       signalUpdatesStash(iteration) :+= remoteSignalUpdates
       if (signalUpdatesStash(currentIteration).size == worldShard.incomingWorkerNeighbours.size) {
+        //        logger.info("RemoteSignal: " + (System.currentTimeMillis() - iterationTime))
         val signalUpdates: Map[CellId, SignalMap] = flatGroup(signalUpdatesStash(currentIteration))(_._1).map {
           case (id, groups) => (id, groups.map(_._2).reduce(_ + _))
         }
@@ -109,6 +128,7 @@ class WorkerActor[ConfigType <: XinukConfig](
     case RemoteCellContents(iteration, remoteCellContents) =>
       remoteCellContentsStash(iteration) :+= remoteCellContents
       if (remoteCellContentsStash(currentIteration).size == worldShard.outgoingWorkerNeighbours.size) {
+        //        logger.info("RemoteCellContents: " + (System.currentTimeMillis() - iterationTime))
         remoteCellContentsStash(currentIteration).flatten.foreach({
           case (cellId, cellContents) => worldShard.cells(cellId).updateContents(cellContents)
         })
@@ -118,6 +138,11 @@ class WorkerActor[ConfigType <: XinukConfig](
         guiActors.foreach(_ ! GridInfo(iteration, worldShard.localCellIds.map(worldShard.cells(_)), iterationMetrics))
         if (iteration % 100 == 0) logger.info(s"finished $iteration")
         self ! StartIteration(currentIteration + 1)
+      }
+
+    case Statistics(neighbour, avgTime) =>
+      if(avgTime != 0.0){
+        balancer.neighboursPlanAvgTime(neighbour) = avgTime
       }
   }
 
@@ -271,5 +296,7 @@ object WorkerActor {
   final case class RemoteSignal private(iteration: Long, signalUpdates: Seq[(CellId, SignalMap)])
 
   final case class RemoteCellContents private(iteration: Long, remoteCellContents: Seq[(CellId, CellContents)])
+
+  final case class Statistics private(senderId: WorkerId, avgTime: Double)
 
 }
