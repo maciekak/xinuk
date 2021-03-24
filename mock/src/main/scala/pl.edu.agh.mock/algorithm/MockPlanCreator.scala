@@ -12,7 +12,9 @@ final case class MockPlanCreator() extends PlanCreator[MockConfig] {
   override def createPlans(iteration: Long, cellId: CellId, cellState: CellState, neighbourContents: Map[Direction, CellContents])
                           (implicit config: MockConfig): (Plans, MockMetrics) = {
     cellState.contents match {
-      case Mock => (randomMove(neighbourContents), MockMetrics(1, 0))
+      case Mock =>
+        Thread.sleep(200)
+        (randomMove(neighbourContents), MockMetrics(1, 0))
       case _ => (Plans.empty, MockMetrics.empty)
     }
   }
