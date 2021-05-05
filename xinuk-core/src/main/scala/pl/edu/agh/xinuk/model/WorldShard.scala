@@ -2,6 +2,9 @@ package pl.edu.agh.xinuk.model
 
 import pl.edu.agh.xinuk.config.XinukConfig
 
+import scala.collection.mutable.{Map, Set}
+import scala.collection.immutable.{Map => ImMap}
+
 
 trait WorldType {
   def directions: Seq[Direction]
@@ -20,9 +23,9 @@ trait WorldShard {
 
   def incomingCells: Map[WorkerId, Set[CellId]]
 
-  def outgoingWorkerNeighbours: Set[WorkerId] = outgoingCells.keySet + workerId
+  def outgoingWorkerNeighbours: Set[WorkerId]
 
-  def incomingWorkerNeighbours: Set[WorkerId] = incomingCells.keySet + workerId
+  def incomingWorkerNeighbours: Set[WorkerId]
 
   def cellToWorker: Map[CellId, WorkerId]
 
@@ -30,9 +33,9 @@ trait WorldShard {
     cells.keys.map { cellId =>
       val neighbourStates = cellNeighbours(cellId)
         .map { case (direction, neighbourId) => (direction, cells(neighbourId).state) }
-      (cellId, signalPropagation.calculateUpdate(iteration, neighbourStates))
+      (cellId, signalPropagation.calculateUpdate(iteration, neighbourStates.toMap))
     }
-  }.toMap
+  }.to(Map)
 }
 
 trait WorldBuilder {
@@ -47,5 +50,5 @@ trait WorldBuilder {
     connectOneWay(to, direction.opposite, from)
   }
 
-  def build(): Map[WorkerId, WorldShard]
+  def build(): ImMap[WorkerId, WorldShard]
 }

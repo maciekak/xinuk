@@ -1,10 +1,6 @@
 package pl.edu.agh.xinuk.gui
 
-import java.awt.image.BufferedImage
-import java.awt.{Color, Dimension}
-
 import akka.actor.{Actor, ActorLogging, ActorRef, Props}
-import javax.swing.{ImageIcon, UIManager}
 import org.jfree.chart.plot.PlotOrientation
 import org.jfree.chart.{ChartFactory, ChartPanel}
 import org.jfree.data.xy.{XYSeries, XYSeriesCollection}
@@ -15,7 +11,11 @@ import pl.edu.agh.xinuk.model._
 import pl.edu.agh.xinuk.model.grid.GridCellId
 import pl.edu.agh.xinuk.simulation.WorkerActor.{MsgWrapper, SubscribeGridInfo}
 
+import java.awt.image.BufferedImage
+import java.awt.{Color, Dimension}
+import javax.swing.{ImageIcon, UIManager}
 import scala.collection.mutable
+import scala.collection.mutable.Set
 import scala.swing.BorderPanel.Position._
 import scala.swing.TabbedPane.Page
 import scala.swing._

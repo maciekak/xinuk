@@ -7,8 +7,11 @@ import pl.edu.agh.xinuk.algorithm._
 import pl.edu.agh.xinuk.config.XinukConfig
 import pl.edu.agh.xinuk.gui.GuiActor.GridInfo
 import pl.edu.agh.xinuk.model._
+import pl.edu.agh.xinuk.model.grid.GridWorldShard
 
+import scala.collection.immutable.{Map => ImMap}
 import scala.collection.mutable
+import scala.collection.mutable.{Map, Set}
 import scala.util.Random
 
 class WorkerActor[ConfigType <: XinukConfig](
@@ -49,7 +52,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       this.worldShard = world
       this.logger = LoggerFactory.getLogger(id.value.toString)
       logger.info("starting")
-      this.balancer = new BalancerAlgo(worldShard)
+      this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], ImMap.empty)
       planCreator.initialize(worldShard)
       self ! StartIteration(1)
       unstashAll()
@@ -68,8 +71,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       logger.info("finalizing")
       planCreator.finalize(worldShard)
       logger.info("terminating")
-      import scala.concurrent.duration._
-      Thread.sleep(5.seconds.toMillis)
+      Thread.sleep(5000)
       context.system.terminate()
 
     case StartIteration(iteration) =>
@@ -84,7 +86,7 @@ class WorkerActor[ConfigType <: XinukConfig](
         if(iteration % 10 == 0) {
           distribute(
             balancer.worldShard.outgoingWorkerNeighbours,
-            balancer.worldShard.outgoingWorkerNeighbours.zip(List.fill(worldShard.outgoingWorkerNeighbours.size)(planTimeAvg)).toMap)(
+            balancer.worldShard.outgoingWorkerNeighbours.zip(List.fill(worldShard.outgoingWorkerNeighbours.size)(planTimeAvg)).to(Map))(
             0.0, { time => Statistics(this.id, time) })
         }
       }
@@ -149,6 +151,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   private def createPlans(cell: Cell): Seq[TargetedPlan] = {
     val neighbourStates = worldShard.cellNeighbours(cell.id)
       .map { case (direction, neighbourId) => (direction, worldShard.cells(neighbourId).state.contents) }
+      .toMap
     val (plans, metrics) = planCreator.createPlans(currentIteration, cell.id, cell.state, neighbourStates)
     iterationMetrics += metrics
     plans.outwardsPlans.flatMap {
@@ -217,7 +220,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
 
   private def groupByWorker[A](items: Seq[A])(idExtractor: A => CellId): Map[WorkerId, Seq[A]] = {
-    items.groupBy { item => worldShard.cellToWorker(idExtractor(item)) }
+    items.groupBy { item => worldShard.cellToWorker(idExtractor(item)) }.to(Map)
   }
 
   private def distributeConsequences(iteration: Long, consequencesToDistribute: Seq[TargetedStateUpdate]): Unit = {
@@ -248,7 +251,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   private def flatGroup[A](seqs: Seq[Seq[A]])(idExtractor: A => CellId): Map[CellId, Seq[A]] = {
     seqs.flatten.groupBy {
       idExtractor(_)
-    }
+    }.to(Map)
   }
 
   private def shuffleUngroup[*, V](groups: Map[*, Seq[V]]): Seq[V] = {
@@ -298,5 +301,19 @@ object WorkerActor {
   final case class RemoteCellContents private(iteration: Long, remoteCellContents: Seq[(CellId, CellContents)])
 
   final case class Statistics private(senderId: WorkerId, avgTime: Double)
+
+  final case class Proposal private(senderId: WorkerId, numberOfCells: Int)
+
+  final case class AcceptProposal private(senderId: WorkerId)
+
+  final case class Resignation private(senderId: WorkerId)
+
+  final case class UpdateNeighbourhood private(senderId: WorkerId)
+
+  final case class AcknowledgeUpdateNeighbourhood private(senderId: WorkerId)
+
+  final case class FixNeighbourhood private(senderId: WorkerId)
+
+  final case class AcknowledgeFixNeighbourhood private(senderId: WorkerId)
 
 }
