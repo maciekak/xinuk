@@ -52,7 +52,8 @@ lazy val `xinuk-core` = project
       "org.scala-lang.modules" %% "scala-swing" % Version.ScalaSwing,
       "com.fasterxml.jackson.module" %% "jackson-module-scala" % Version.JacksonScala,
       "org.jfree" % "jfreechart" % Version.JFreeChart,
-      "org.scalatest" %% "scalatest" % Version.ScalaTest % Test,
+      "org.scalatest" %% "scalatest" % Version.ScalaTest,
+      "org.scalamock" %% "scalamock" % "4.4.0",
       "com.typesafe.akka" %% "akka-testkit" % Version.Akka % Test,
       "org.mockito" % "mockito-core" % Version.Mockito % Test,
     ),
@@ -64,7 +65,6 @@ def modelProject(projectName: String)(mainClassName: String): Project = {
       name := projectName,
       libraryDependencies ++= Seq(
         "ch.qos.logback" % "logback-classic" % Version.Logback,
-        "org.scalatest" %% "scalatest" % Version.ScalaTest % Test,
         "com.typesafe.akka" %% "akka-testkit" % Version.Akka % Test,
         "org.mockito" % "mockito-core" % Version.Mockito % Test,
       ),

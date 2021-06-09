@@ -52,7 +52,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       this.worldShard = world
       this.logger = LoggerFactory.getLogger(id.value.toString)
       logger.info("starting")
-      this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], ImMap.empty)
+      this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], ImMap.empty, null)
       planCreator.initialize(worldShard)
       self ! StartIteration(1)
       unstashAll()

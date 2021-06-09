@@ -1,12 +1,14 @@
 package pl.edu.agh.xinuk.simulation
 
-import scala.collection.mutable.{Set => MutableSet, Map => MutableMap}
 import pl.edu.agh.xinuk.model.balancing.CellsToChange
 import pl.edu.agh.xinuk.model.grid.{GridCellId, GridWorldShard}
 import pl.edu.agh.xinuk.model.{Cell, CellId, Direction, WorkerId}
 
+import scala.collection.mutable.{Map => MutableMap, Set => MutableSet}
+
 class BalancerAlgo(val worldShard: GridWorldShard,
-                   val balancingNeighbours: Map[WorkerId, (Int, Int)]) {
+                   val balancingNeighbours: Map[WorkerId, (Int, Int)],
+                   val metricFun: ((Int, Int), GridCellId) => Double) {
 
   val neighboursPlanAvgTime: collection.mutable.Map[WorkerId, Double] =
     collection.mutable.Map.empty[WorkerId, Double] ++
@@ -20,7 +22,9 @@ class BalancerAlgo(val worldShard: GridWorldShard,
                   incomingCellsToRemove: Set[CellId],
                   newIncomingCells: Set[CellId],
                   cellToWorker: Map[CellId, WorkerId],
-                  cellNeighbours: Map[CellId, Map[Direction, CellId]]): Unit = {
+                  cellNeighbours: Map[CellId, Map[Direction, CellId]]): (
+      Map[WorkerId, Set[CellId]],
+      Map[WorkerId, Set[CellId]]) = {
 
     worldShard.localCellIds ++= localCellsIds
     worldShard.cells ++= cells
@@ -37,19 +41,20 @@ class BalancerAlgo(val worldShard: GridWorldShard,
         worldShard.outgoingCells += (k -> v.to(MutableSet))
       }
     })
-    val workerOutgoing = worldShard.outgoingCells(worldShard.workerId)
+    val workerOutgoing = worldShard.outgoingCells(workerId)
     workerOutgoing --= localCellsIds
     if (workerOutgoing.isEmpty) {
       worldShard.outgoingCells -= workerId
     }
 
-    val workerIncoming = worldShard.incomingCells(worldShard.workerId)
+    val workerIncoming = worldShard.incomingCells(workerId)
     workerIncoming --= incomingCellsToRemove
     workerIncoming ++= newIncomingCells
     if (workerIncoming.isEmpty) {
       worldShard.incomingCells -= workerId
     }
-    incomingCells.foreachEntry((k, v) => {
+    val inCells = incomingCells - worldShard.workerId
+    inCells.foreachEntry((k, v) => {
       if (worldShard.incomingCells.contains(k)) {
         worldShard.incomingCells(k) ++= v
       } else {
@@ -74,10 +79,13 @@ class BalancerAlgo(val worldShard: GridWorldShard,
         }
       }
     })
+    
+    //TODO: do przemyślenia jak styk nowego i starego obszaru
+    (outCells, inCells)
   }
 
   def shrinkCells(cells: Map[CellId, Cell],
-                  localCellsIds: Seq[CellId],
+                  localCellsIds: Set[CellId],
                   workerId: WorkerId,
                   outgoingCellsToRemove: Set[CellId],
                   newIncomingCells: Set[CellId],
@@ -118,6 +126,60 @@ class BalancerAlgo(val worldShard: GridWorldShard,
 
     renewWorkerNeighbour()
   }
+  
+  def fixNeighbourhood(newNeighbour: WorkerId, 
+                       oldNeighbour: WorkerId,
+                       newIncomingCells: Set[CellId],
+                       incomingCellsToRemove: Set[CellId],
+                       newOutgoingCells: Set[CellId])
+                  :(Set[CellId], Set[CellId], Set[CellId]) = {
+    var diffOutCells: Set[CellId] = Set.empty
+    if(worldShard.outgoingCells.contains(oldNeighbour)) {
+      val oldOutCells = worldShard.outgoingCells(oldNeighbour)
+      val intersectCells = newOutgoingCells.intersect(oldOutCells)
+      if(intersectCells.size != newOutgoingCells.size){
+        diffOutCells = newOutgoingCells.diff(intersectCells)
+      }
+      worldShard.cellToWorker ++= intersectCells.map(c => c -> newNeighbour)
+      oldOutCells --= intersectCells
+      if(oldOutCells.isEmpty){
+        worldShard.outgoingCells -= oldNeighbour
+      }
+      if(worldShard.outgoingCells.contains(newNeighbour)){
+        worldShard.outgoingCells(newNeighbour) ++= intersectCells
+      } else {
+        worldShard.outgoingCells += newNeighbour -> (MutableSet.empty ++ intersectCells)
+      }
+    } else {
+      diffOutCells = newOutgoingCells
+    }
+    
+    var diffNewInCells: Set[CellId] = Set.empty
+    var diffInCells: Set[CellId] = Set.empty
+    if(worldShard.incomingCells.contains(oldNeighbour)){
+      val oldInCells = worldShard.incomingCells(oldNeighbour)
+      val intersectCells = incomingCellsToRemove.intersect(oldInCells)
+      if(intersectCells.size != incomingCellsToRemove.size){
+        diffInCells = incomingCellsToRemove.diff(intersectCells)
+      }
+      oldInCells --= intersectCells
+      if(oldInCells.isEmpty){
+        worldShard.incomingCells -= oldNeighbour
+      }
+      diffNewInCells = newIncomingCells.diff(worldShard.localCellIds)
+      val newLocalIncomingCells = newIncomingCells.diff(diffNewInCells)
+      if(worldShard.incomingCells.contains(newNeighbour)){
+        worldShard.incomingCells(newNeighbour) ++= newLocalIncomingCells
+      } else if(newLocalIncomingCells.nonEmpty) {
+        worldShard.incomingCells += newNeighbour -> (MutableSet.empty ++ newLocalIncomingCells)
+      }
+    } else {
+      diffNewInCells = newIncomingCells
+      diffInCells = incomingCellsToRemove
+    }
+    
+    (diffNewInCells, diffInCells, diffOutCells)
+  }
 
   def findCells(workerId: WorkerId, quantity: Int): CellsToChange = {
 
@@ -132,8 +194,9 @@ class BalancerAlgo(val worldShard: GridWorldShard,
     val cellsKeys = cells.keySet
 
     val incomingCells = worldShard.incomingCells
-      .map(item => item._1 -> item._2.intersect(cellsToRemove))
+      .map(item => item._1 -> item._2.intersect(cellsToRemove).toSet)
       .filter(c => c._2.nonEmpty)
+      .toMap
     
     val outgoingCells = worldShard.outgoingCells
       .map(item => item._1 -> item._2.intersect(cellsKeys))
@@ -144,7 +207,7 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       .to(Map)
 
     val cellNeighbours = cellsKeys
-      .map(c => c -> worldShard.cellNeighbours(c))
+      .map(c => c -> worldShard.cellNeighbours(c).toMap)
       .to(Map)
 
     val remainingLocalCells = cellsKeys.filter(c => !cellsToRemove.contains(c) && worldShard.localCellIds.contains(c)).to(Set)
@@ -152,9 +215,11 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       && item._2.values.exists(c => remainingLocalCells.contains(c)))
       .keys
       .to(Set)
-    val outgoingCellsToRemove = cellsKeys.filterNot(c => remainingLocalCells.contains(c) && borderOfRemainingCells.contains(c)).to(Set)
+    val outgoingCellsToRemove = cellsKeys.filterNot(c => remainingLocalCells.contains(c) || borderOfRemainingCells.contains(c)).to(Set)
     val newIncomingCells = remainingLocalCells.filter(cellId => cellNeighbours(cellId).values.exists(c => cellsToRemove.contains(c)))
     val newOutgoingCells = cellsToRemove.filter(cellId => cellNeighbours(cellId).values.exists(c => remainingLocalCells.contains(c)))
+    
+    val neighboursOutgoingCellsToRemove = outgoingCellsToRemove.groupBy(c => cellToWorker(c)) - worldShard.workerId
 
     new CellsToChange(workerId,
       cellsToRemove,
@@ -167,7 +232,8 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       borderOfRemainingCells,
       outgoingCellsToRemove,
       newIncomingCells,
-      newOutgoingCells
+      newOutgoingCells,
+      neighboursOutgoingCellsToRemove
     )
   }
 
@@ -180,7 +246,7 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       return cells
     }
 
-    cells.sortBy(c => getMetricValue(mask, c))
+    cells.sortBy(c => metricFun(mask, c))
       .take(quantity)
   }
 

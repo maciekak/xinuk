@@ -18,8 +18,14 @@ final class GridWorldShard(val cells: Map[CellId, Cell],
                            val incomingCells: Map[WorkerId, Set[CellId]],
                            val cellToWorker: Map[CellId, WorkerId])(implicit config: XinukConfig) extends WorldShard {
 
-  private val localCellIdsSet: Set[CellId] = cells.keys.filter(k => cellToWorker(k) == workerId).to(Set)
-
+  private var localCellIdsSet: Set[CellId] = Set.empty
+  
+  private def init(): Unit = {
+    localCellIdsSet = cells.keys.filter(k => cellToWorker(k) == workerId).to(Set)
+  }
+  init()
+  
+  val localCellIds: Set[CellId] = localCellIdsSet
 
   val outgoingWorkerNeighbours: Set[WorkerId] = (outgoingCells.keySet.toSet + workerId).to(Set)
   val incomingWorkerNeighbours: Set[WorkerId] = (incomingCells.keySet.toSet + workerId).to(Set)
@@ -35,7 +41,6 @@ final class GridWorldShard(val cells: Map[CellId, Cell],
     ((xMin, yMin), (xSize, ySize))
   }
 
-  var localCellIds: Set[CellId] = localCellIdsSet
 }
 
 object GridWorldShard {
@@ -144,9 +149,6 @@ case class GridWorldBuilder()(implicit config: XinukConfig) extends WorldBuilder
 
       (workerId, GridWorldShard(cells, neighbours, workerId, outgoingCells, incomingCells, cellToWorker))
     })
-    var w1 = result(WorkerId(1))
-    var w2 = result(WorkerId(2))
-    w1.outgoingWorkerNeighbours
     result.toMap
   }
 
