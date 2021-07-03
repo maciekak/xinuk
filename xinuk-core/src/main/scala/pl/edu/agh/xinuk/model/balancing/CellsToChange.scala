@@ -6,6 +6,7 @@ import scala.collection.mutable
   
 class CellsToChange (val workerId: WorkerId,
                      val cellsToRemove: Set[CellId],
+                     val oldLocalCells: Set[CellId],
                      val cells: Map[CellId, Cell],
                      val incomingCells: Map[WorkerId, Set[CellId]],
                      val outgoingCells: mutable.Map[WorkerId, mutable.Set[CellId]],
