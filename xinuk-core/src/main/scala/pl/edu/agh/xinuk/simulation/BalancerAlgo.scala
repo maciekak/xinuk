@@ -290,8 +290,8 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       return (takenCells ++ cells).toSet
     }
 
-    val ordering = Ordering[Double].reverse
-    val sortedCells = cells.toSeq.sortBy(c => metricFun(mask, c))(ordering).toSet
+    val withValue = cells.map(c => c -> metricFun(mask, c)).toSeq
+    val sortedCells = withValue.sortBy(_._2).reverse.map(_._1)
     takenCells ++= sortedCells.take(quantity - takenCells.size)
     takenCells.toSet.asInstanceOf[Set[CellId]]
   }

@@ -1642,6 +1642,7 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
       GridCellId(4, 2) -> (3, 4),
       GridCellId(4, 3) -> (3, 4),
       GridCellId(4, 4) -> (3, 4),
+      GridCellId(3, 2) -> (3, 4),
       GridCellId(3, 3) -> (3, 4),
       GridCellId(3, 4) -> (3, 4),
       GridCellId(2, 3) -> (3, 4),
@@ -1685,7 +1686,6 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
 
   test("Case number 20a") {
     // Arrange
-    //TODO: nie przechodzi naprawić
     val wss = generateWorldShard(ImMap(
       WorkerId(1) -> getSquare(0, 0, 2),
       WorkerId(2) -> (getSquare(0, 2, 2) + GridCellId(3, 3)),
@@ -1726,7 +1726,7 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
     doFixingNeighbours(balancerAlgos, balNeighbours, unhandledCells)
 
     val wss2 = generateWorldShard(ImMap(
-      WorkerId(1) -> getRectangle(0, 0, 3, 1),
+      WorkerId(1) -> getRectangle(0, 0, 1, 3),
       WorkerId(2) -> Set(GridCellId(3, 3)),
       WorkerId(3) -> Set(GridCellId(5, 5)),
       WorkerId(4) -> getRectangle(0, 4, 1, 7)))
@@ -1743,7 +1743,6 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
 
   test("Case number 20b") {
     // Arrange
-    //TODO: nie przechodzi naprawić
     val wss = generateWorldShard(ImMap(
       WorkerId(1) -> getSquare(0, 0, 2),
       WorkerId(2) -> (getSquare(0, 2, 2) + GridCellId(3, 3)),
@@ -1784,7 +1783,7 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
     doFixingNeighbours(balancerAlgos, balNeighbours, unhandledCells)
 
     val wss2 = generateWorldShard(ImMap(
-      WorkerId(1) -> getRectangle(0, 0, 3, 1),
+      WorkerId(1) -> getRectangle(0, 0, 1, 3),
       WorkerId(2) -> Set(GridCellId(3, 3)),
       WorkerId(3) -> Set(GridCellId(3, 4)),
       WorkerId(4) -> getRectangle(0, 4, 1, 7)))
