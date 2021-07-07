@@ -1,10 +1,10 @@
-package pl.edu.agh.xinuk.simulation
+package pl.edu.agh.xinuk.balancing
 
 import org.scalamock.scalatest.MockFactory
 import org.scalatest.funsuite._
 import pl.edu.agh.xinuk.config.XinukConfig
-import pl.edu.agh.xinuk.model.grid.{GridCellId, GridDirection, GridWorldShard}
 import pl.edu.agh.xinuk.model._
+import pl.edu.agh.xinuk.model.grid.{GridCellId, GridDirection, GridWorldShard}
 
 import scala.collection.immutable.{Map => ImMap, Set => ImSet}
 import scala.collection.mutable.{Map => MutMap, Set => MutSet}

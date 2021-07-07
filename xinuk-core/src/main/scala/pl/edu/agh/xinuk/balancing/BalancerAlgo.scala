@@ -1,4 +1,4 @@
-package pl.edu.agh.xinuk.simulation
+package pl.edu.agh.xinuk.balancing
 
 import pl.edu.agh.xinuk.model.balancing.CellsToChange
 import pl.edu.agh.xinuk.model.grid.{GridCellId, GridWorldShard}
@@ -12,9 +12,9 @@ class BalancerAlgo(val worldShard: GridWorldShard,
                    val metricFun: ((Int, Int), GridCellId) => Double,
                    val shouldGoDepth: Boolean = false) {
 
-  val neighboursPlanAvgTime: collection.mutable.Map[WorkerId, Double] =
-    collection.mutable.Map.empty[WorkerId, Double] ++
-      balancingNeighbours.keys.map(w => w -> 0.0).toMap
+  val neighboursPlanAvgTime: collection.mutable.Map[WorkerId, StatisticCollector] =
+    collection.mutable.Map.empty[WorkerId, StatisticCollector] ++
+      balancingNeighbours.keys.map(w => w -> new StatisticCollector).toMap
 
 
   def expandCells(cells: Map[CellId, Cell],

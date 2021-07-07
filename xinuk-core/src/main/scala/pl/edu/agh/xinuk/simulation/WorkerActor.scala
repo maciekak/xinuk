@@ -4,6 +4,7 @@ import akka.actor.{Actor, ActorRef, Props, Stash}
 import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
 import org.slf4j.{Logger, LoggerFactory, MarkerFactory}
 import pl.edu.agh.xinuk.algorithm._
+import pl.edu.agh.xinuk.balancing.{BalancerAlgo, StatisticsData}
 import pl.edu.agh.xinuk.config.XinukConfig
 import pl.edu.agh.xinuk.gui.GuiActor.GridInfo
 import pl.edu.agh.xinuk.model._
@@ -29,6 +30,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   val consequencesStash: mutable.Map[Long, Seq[Seq[TargetedStateUpdate]]] = mutable.Map.empty.withDefaultValue(Seq.empty)
   val signalUpdatesStash: mutable.Map[Long, Seq[Seq[(CellId, SignalMap)]]] = mutable.Map.empty.withDefaultValue(Seq.empty)
   val remoteCellContentsStash: mutable.Map[Long, Seq[Seq[(CellId, CellContents)]]] = mutable.Map.empty.withDefaultValue(Seq.empty)
+  val statisticsStash: mutable.Map[Long, mutable.Map[WorkerId, StatisticsData]] = mutable.Map.empty.withDefaultValue(mutable.Map.empty)
 
   var logger: Logger = _
   var id: WorkerId = _
@@ -79,16 +81,11 @@ class WorkerActor[ConfigType <: XinukConfig](
       currentIteration = iteration
       iterationMetrics = emptyMetrics
       val plans: Seq[TargetedPlan] = worldShard.localCellIds.map(worldShard.cells(_)).flatMap(createPlans).toSeq
+      val timeDiff = System.currentTimeMillis() - iterationTime
       distributePlans(currentIteration, plans)
       if(iteration > 0){
-        planTimeAvg = (planTimeAvg * (iteration-1) + (System.currentTimeMillis() - iterationTime))/iteration
+        planTimeAvg = (planTimeAvg * (iteration-1) + timeDiff)/iteration
         logger.info("RemotePlans: " + planTimeAvg)
-        if(iteration % 10 == 0) {
-          distribute(
-            balancer.worldShard.outgoingWorkerNeighbours,
-            balancer.worldShard.outgoingWorkerNeighbours.zip(List.fill(worldShard.outgoingWorkerNeighbours.size)(planTimeAvg)).to(Map))(
-            0.0, { time => Statistics(this.id, time) })
-        }
       }
 
     case RemotePlans(iteration, remotePlans) =>
@@ -139,13 +136,61 @@ class WorkerActor[ConfigType <: XinukConfig](
         logMetrics(currentIteration, iterationMetrics)
         guiActors.foreach(_ ! GridInfo(iteration, worldShard.localCellIds.map(worldShard.cells(_)), iterationMetrics))
         if (iteration % 100 == 0) logger.info(s"finished $iteration")
-        self ! StartIteration(currentIteration + 1)
+        if (iteration % 10 == 0 && iteration > 0) {
+          distributeStatistics(worldShard.workerId, planTimeAvg)
+        } else {
+          self ! StartIteration(currentIteration + 1)
+        }
       }
 
-    case Statistics(neighbour, avgTime) =>
-      if(avgTime != 0.0){
-        balancer.neighboursPlanAvgTime(neighbour) = avgTime
+    case Statistics(iteration, neighbour, statisticsData) =>
+      statisticsStash(iteration) += (neighbour -> statisticsData)
+      if (statisticsStash(iteration).size == worldShard.outgoingWorkerNeighbours.size) {
+        statisticsStash(iteration).foreach(
+          s => balancer.neighboursPlanAvgTime(s._1).addStatisticsDataBlock(s._2))
+        
+        statisticsStash.remove(iteration)
+        
+        if(iteration % 100 == 0 && iteration > 0){
+          self ! StartBalancing(currentIteration)
+        } else {
+          self ! StartIteration(currentIteration + 1)
+        }
       }
+
+    case StartBalancing(iteration) =>
+      //sort neighbours by time
+      //for neutral send R
+      //for best to take send P
+      //for rest wait
+    case Proposal(iteration, senderId, numberOfCells) =>
+      //check if better proposal wasnt propose
+      //if yes, mark that got message from that worker
+      //if no, add to waiting and send worse R
+      //if the best, send the rest R
+      //and answer with A
+    case AcceptProposal(iteration, senderId) => 
+      //send R to rest workers
+      //check if response wasnt last and got to second phase
+    case Resignation(iteration, senderId) =>
+      //If you send proposal to him then mark him as got message
+      //and send proposal to next one
+      //if there is no next one accept best proposal from you
+      //if this message was last in this phase went to next phase
+    case CellsTransfer(iteration, senderId, cells) =>
+      //Add that cells to yourself and go to neighbour fixing phase
+    case UpdateNeighbourhood(iteration, senderId) =>
+      //dupa
+    case FixNeighbourhood(iteration, senderId) =>
+      //dupa
+    case AcknowledgeFixNeighbourhood(iteration, senderId) =>
+      //dupa
+    case AcknowledgeUpdateNeighbourhood(iteration, senderId) =>
+      //dupa
+    case SynchronizeBeforeStart(iteration, senderId) =>
+      //dupa
+    case SynchronizeBeforeStart2(iteration, senderId) =>
+      //dupa
   }
 
   private def createPlans(cell: Cell): Seq[TargetedPlan] = {
@@ -211,6 +256,13 @@ class WorkerActor[ConfigType <: XinukConfig](
     distribute(
       worldShard.outgoingWorkerNeighbours, grouped)(
       Seq.empty, { data => RemotePlans(iteration, data) })
+  }
+  
+  private def distributeStatistics(senderId: WorkerId, avgTime: Double): Unit = {
+    distribute(
+      balancer.worldShard.outgoingWorkerNeighbours,
+      balancer.worldShard.outgoingWorkerNeighbours.zip(List.fill(worldShard.outgoingWorkerNeighbours.size)(avgTime)).to(Map))(
+      0.0, { time => Statistics(currentIteration, senderId, new StatisticsData(time)) })
   }
 
   private def distribute[A](keys: Set[WorkerId], groups: Map[WorkerId, A])(default: => A, msgCreator: A => Any): Unit = {
@@ -300,20 +352,28 @@ object WorkerActor {
 
   final case class RemoteCellContents private(iteration: Long, remoteCellContents: Seq[(CellId, CellContents)])
 
-  final case class Statistics private(senderId: WorkerId, avgTime: Double)
+  final case class Statistics private(iteration: Long, senderId: WorkerId, statisticsData: StatisticsData)
+  
+  final case class StartBalancing private(iteration: Long)
 
-  final case class Proposal private(senderId: WorkerId, numberOfCells: Int)
+  final case class Proposal private(iteration: Long, senderId: WorkerId, numberOfCells: Int)
 
-  final case class AcceptProposal private(senderId: WorkerId)
+  final case class AcceptProposal private(iteration: Long, senderId: WorkerId)
 
-  final case class Resignation private(senderId: WorkerId)
+  final case class Resignation private(iteration: Long, senderId: WorkerId)
+  
+  final case class CellsTransfer private(iteration: Long, senderId: WorkerId, cells: mutable.Set[CellId])
 
-  final case class UpdateNeighbourhood private(senderId: WorkerId)
+  final case class UpdateNeighbourhood private(iteration: Long, senderId: WorkerId)
 
-  final case class AcknowledgeUpdateNeighbourhood private(senderId: WorkerId)
+  final case class AcknowledgeUpdateNeighbourhood private(iteration: Long, senderId: WorkerId)
 
-  final case class FixNeighbourhood private(senderId: WorkerId)
+  final case class FixNeighbourhood private(iteration: Long, senderId: WorkerId)
 
-  final case class AcknowledgeFixNeighbourhood private(senderId: WorkerId)
+  final case class AcknowledgeFixNeighbourhood private(iteration: Long, senderId: WorkerId)
+
+  final case class SynchronizeBeforeStart private(iteration: Long, senderId: WorkerId)
+
+  final case class SynchronizeBeforeStart2 private(iteration: Long, senderId: WorkerId)
 
 }
