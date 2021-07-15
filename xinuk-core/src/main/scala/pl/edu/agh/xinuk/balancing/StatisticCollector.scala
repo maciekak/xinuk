@@ -6,6 +6,8 @@ class StatisticCollector {
   private var lastBlock: StatisticsData = _
   private var actualBlock: StatisticsData = _
   
+  val actualBlockValue = actualBlock.avgPlanBlockTime
+  
   def addStatisticsDataBlock(dataBlock: StatisticsData) = {
     if(actualBlock == null) {
       actualBlock = dataBlock

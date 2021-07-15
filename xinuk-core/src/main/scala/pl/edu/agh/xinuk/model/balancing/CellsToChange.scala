@@ -17,5 +17,5 @@ class CellsToChange (val workerId: WorkerId,
                      val outgoingCellsToRemove: Set[CellId],
                      val newIncomingCells: Set[CellId],
                      val newOutgoingCells: Set[CellId],
-                     val neighboursOutgoingCellsToRemove: Map[WorkerId, Set[CellId]]){
+                     val neighboursOutgoingCellsToRemove: Map[WorkerId, Set[CellId]]) {
 }
