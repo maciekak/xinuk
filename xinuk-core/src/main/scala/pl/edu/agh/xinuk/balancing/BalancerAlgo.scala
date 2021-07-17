@@ -15,7 +15,10 @@ class BalancerAlgo(val worldShard: GridWorldShard,
   val neighboursPlanAvgTime: collection.mutable.Map[WorkerId, StatisticCollector] =
     collection.mutable.Map.empty[WorkerId, StatisticCollector] ++
       balancingNeighbours.keys.map(w => w -> new StatisticCollector).toMap
-
+      
+  def workerCurrentNeighbours: mutable.Set[WorkerId] = {
+    mutable.Set.empty ++ worldShard.outgoingCells.keySet
+  }
 
   def expandCells(cells: Map[CellId, Cell],
                   localCellsIds: Set[CellId],
@@ -86,7 +89,6 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       }
     })
     
-    //TODO: do przemyślenia jak styk nowego i starego obszaru
     (outCells, inCells)
   }
 
@@ -187,6 +189,7 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       diffInCells = incomingCellsToRemove
     }
 
+    renewWorkerNeighbour()
     (diffNewInCells, diffInCells, diffOutCells)
   }
 

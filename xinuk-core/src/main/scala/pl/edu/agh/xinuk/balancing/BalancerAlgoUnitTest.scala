@@ -1797,4 +1797,52 @@ class BalancerAlgoUnitTest extends AnyFunSuite with MockFactory {
     assert(checkEqualWorldShard(ws3, ws33))
     assert(checkEqualWorldShard(ws4, ws44))
   }
+
+  test("Case number 21") {
+    // Arrange
+    val wss = generateWorldShard(ImMap(
+      WorkerId(1) -> getSquare(0, 0, 50),
+      WorkerId(2) -> getSquare(0, 50, 50),
+      WorkerId(3) -> getSquare(50, 0, 50),
+      WorkerId(4) -> getSquare(50, 50, 50)))
+    val ws1 = wss.find(w => w.workerId == WorkerId(1)).get
+    val ws2 = wss.find(w => w.workerId == WorkerId(2)).get
+    val ws3 = wss.find(w => w.workerId == WorkerId(3)).get
+    val ws4 = wss.find(w => w.workerId == WorkerId(4)).get
+
+    val balNeighbours = ImMap(
+      WorkerId(2) -> (1, 2))
+    val cellsToRemove = (getRectangle(0, 43, 49, 49) ++ getRectangle(13, 42, 37, 42)).map(c => c -> (1, 2)).toMap
+    val balancerAlgo1 = new BalancerAlgo(ws1, balNeighbours, getMetricFun(cellsToRemove), true)
+    val balancerAlgo2 = new BalancerAlgo(ws2, balNeighbours, getMetricFun(cellsToRemove), true)
+    val balancerAlgo3 = new BalancerAlgo(ws3, balNeighbours, getMetricFun(cellsToRemove), true)
+    val balancerAlgo4 = new BalancerAlgo(ws4, balNeighbours, getMetricFun(cellsToRemove), true)
+    val b = (getRectangle(13, 42, 37, 42))
+
+    val balancerAlgos = Map(
+      WorkerId(1) -> balancerAlgo1,
+      WorkerId(2) -> balancerAlgo2,
+      WorkerId(3) -> balancerAlgo3,
+      WorkerId(4) -> balancerAlgo4)
+
+    val unhandledCells = doBalancing(
+      balancerAlgos,
+      balNeighbours,
+      cellsToRemove)
+
+    val wss2 = generateWorldShard(ImMap(
+      WorkerId(1) -> (getSquare(0, 0, 50) -- (getRectangle(0, 43, 49, 49) ++ getRectangle(13, 42, 37, 42))),
+      WorkerId(2) -> (getSquare(0, 50, 50) ++ (getRectangle(0, 43, 49, 49) ++ getRectangle(13, 42, 37, 42))),
+      WorkerId(3) -> getSquare(50, 0, 50),
+      WorkerId(4) -> getSquare(50, 50, 50)))
+    val ws11 = wss2.find(w => w.workerId == WorkerId(1)).get
+    val ws22 = wss2.find(w => w.workerId == WorkerId(2)).get
+    val ws33 = wss2.find(w => w.workerId == WorkerId(3)).get
+    val ws44 = wss2.find(w => w.workerId == WorkerId(4)).get
+
+    assert(checkEqualWorldShard(ws1, ws11))
+    assert(checkEqualWorldShard(ws2, ws22))
+    assert(checkEqualWorldShard(ws3, ws33))
+    assert(checkEqualWorldShard(ws4, ws44))
+  }
 }

@@ -28,7 +28,8 @@ final class GridWorldShard(val cells: Map[CellId, Cell],
   val localCellIds: Set[CellId] = localCellIdsSet
 
   val outgoingWorkerNeighbours: Set[WorkerId] = (outgoingCells.keySet.toSet + workerId).to(Set)
-  val incomingWorkerNeighbours: Set[WorkerId] = (incomingCells.keySet.toSet + workerId).to(Set)
+  val incomingWorkerNeighbours: Set[WorkerId] = (
+    incomingCells.keySet.toSet + workerId).to(Set)
 
   def span: ((Int, Int), (Int, Int)) = {
     val coords = localCellIds.map { case GridCellId(x, y) => (x, y) }
@@ -122,7 +123,7 @@ case class GridWorldBuilder()(implicit config: XinukConfig) extends WorldBuilder
     val globalIncomingCells: Map[WorkerId, Map[WorkerId, Set[CellId]]] = workerDomains.keys.map {
       id => (id, globalOutgoingCells
         .filter { case (_, outgoing) => outgoing.contains(id)}
-        .map( { case (otherId, outgoing) => (otherId, outgoing(id)) }))
+        .map( { case (otherId, outgoing) => (otherId, Set.empty ++ outgoing(id).map(o => o).toSet) }))
     }.to(Map)
 
     val result = workerDomains.map({ case (workerId, (localIds, remoteIds)) =>

@@ -2,7 +2,6 @@ package pl.edu.agh.xinuk
 
 import java.awt.Color
 import java.io.File
-
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings}
 import com.typesafe.config.{Config, ConfigFactory, ConfigRenderOptions}
@@ -12,6 +11,7 @@ import pl.edu.agh.xinuk.algorithm.{Metrics, PlanCreator, PlanResolver, WorldCrea
 import pl.edu.agh.xinuk.config.{GuiType, XinukConfig}
 import pl.edu.agh.xinuk.gui.GuiActor
 import pl.edu.agh.xinuk.model._
+import pl.edu.agh.xinuk.model.balancing.BalancerInfo
 import pl.edu.agh.xinuk.model.grid.GridWorldShard
 import pl.edu.agh.xinuk.simulation.WorkerActor
 
@@ -65,6 +65,15 @@ class Simulation[ConfigType <: XinukConfig : ValueReader](
     if (config.isSupervisor) {
       val workerToWorld: Map[WorkerId, WorldShard] = worldCreator.prepareWorld().build()
 
+      val xOffset = config.worldWidth / config.workersRoot
+      val yOffset = config.worldHeight / config.workersRoot
+      val middlePoints = workerToWorld.keys.map(workerId => {
+        val xPos = (workerId.value - 1) / config.workersRoot
+        val yPos = (workerId.value - 1) % config.workersRoot
+        val xMid = xOffset * xPos + xOffset / 2
+        val yMid = yOffset * yPos + yOffset / 2
+        workerId -> (xMid, yMid)
+      }).toMap
       workerToWorld.foreach( { case (workerId, world) =>
         (config.guiType, world) match {
           case (GuiType.None, _) =>
@@ -72,7 +81,9 @@ class Simulation[ConfigType <: XinukConfig : ValueReader](
             system.actorOf(GuiActor.props(workerRegionRef, workerId, gridWorld.span, cellToColor))
           case _ => logger.warn("GUI type incompatible with World format.")
         }
-        WorkerActor.send(workerRegionRef, workerId, WorkerActor.WorkerInitialized(world))
+        
+        val balancerInfo = new BalancerInfo(middlePoints)
+        WorkerActor.send(workerRegionRef, workerId, WorkerActor.WorkerInitialized(world, balancerInfo))
       })
     }
   }

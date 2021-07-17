@@ -147,12 +147,16 @@ private[gui] class GuiGrid(worldSpan: ((Int, Int), (Int, Int)), cellToColor: Par
     icon = new ImageIcon(img)
 
     def set(cells: Set[Cell]): Unit = {
+      val maxX = config.worldWidth / config.workersRoot
+      val maxY = config.worldHeight / config.workersRoot
       cells.foreach {
         case Cell(GridCellId(x, y), state) =>
           val startX = (x - xOffset) * guiCellSize
           val startY = (y - yOffset) * guiCellSize
-          val color: Color = cellToColor.applyOrElse(state, defaultColor)
-          img.setRGB(startX, startY, guiCellSize, guiCellSize, Array.fill(guiCellSize * guiCellSize)(color.getRGB), 0, guiCellSize)
+          if(startX >= 0 && startY >= 0 && startX < maxX * guiCellSize && startY < maxY * guiCellSize){
+            val color: Color = cellToColor.applyOrElse(state, defaultColor)
+            img.setRGB(startX, startY, guiCellSize, guiCellSize, Array.fill(guiCellSize * guiCellSize)(color.getRGB), 0, guiCellSize)
+          }
         case _ =>
       }
       this.repaint()
