@@ -13,7 +13,7 @@ class StatisticCollector {
       actualBlock = dataBlock
     } else if(lastBlock == null) {
       lastBlock = actualBlock
-      actualBlock = lastBlock
+      actualBlock = dataBlock
     } else if(avgArchivalBlock == null) {
       avgArchivalBlock = lastBlock
       archivalBlockCounter += 1
