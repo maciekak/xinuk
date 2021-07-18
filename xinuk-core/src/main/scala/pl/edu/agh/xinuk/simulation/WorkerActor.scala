@@ -9,7 +9,7 @@ import pl.edu.agh.xinuk.config.XinukConfig
 import pl.edu.agh.xinuk.gui.GuiActor.GridInfo
 import pl.edu.agh.xinuk.model._
 import pl.edu.agh.xinuk.model.balancing.{BalancerInfo, CellsToExpand}
-import pl.edu.agh.xinuk.model.grid.GridWorldShard
+import pl.edu.agh.xinuk.model.grid.{GridCellId, GridWorldShard}
 
 import scala.collection.immutable.{Map => ImMap, Set => ImSet}
 import scala.collection.mutable
@@ -26,10 +26,24 @@ class WorkerActor[ConfigType <: XinukConfig](
 
   import pl.edu.agh.xinuk.simulation.WorkerActor._
   
+  val IsDebugMode: Boolean = false
   val StatisticsDistributionInterval = 10
   val BalancingIntervalMultiplier = 1
   val BalancingInterval: Int = StatisticsDistributionInterval * BalancingIntervalMultiplier
-  val ShouldGoDepth: Boolean = true
+  val ShouldGoDepth: Boolean = false
+  val ShouldUseMetricOnAllFoundCells: Boolean = false
+  val ShouldUpdateMiddlePoint: Boolean = true
+  val ShouldCheckCorrectness: Boolean = false
+  val ShouldLogChanges: Boolean = true
+  val MinimumNumberOfAdjacentCells: Int = 4
+  val MinimumDiffBetweenWorkers: Double = 0.85
+  val AmountCellsDivider = 6
+  
+  val AffectedWorkers: Seq[WorkerId] = Seq(WorkerId(2), WorkerId(5))
+  val SlowMultiplier: Double = 0.7
+  val SimulationCase: String = "workerCells"
+  val IsAreaType: Boolean = SimulationCase.contains("area")
+  val SimulationCases: Seq[String] = Seq("none", "mock", "workerCells", "workerCellsSquare", "areaMiddle", "areaLongRect", "areaHalf", "areaFreeBorders")
 
   val guiActors: mutable.Set[ActorRef] = mutable.Set.empty
   val plansStash: mutable.Map[Long, Seq[Seq[TargetedPlan]]] = mutable.Map.empty.withDefaultValue(Seq.empty)
@@ -71,7 +85,9 @@ class WorkerActor[ConfigType <: XinukConfig](
   var phaseTime: Long = _
   var currentIterationTime: Long = _
   var blockAvgTime: Double = _
-  var consequenceTimeAvg: Double = _
+  var wholeIterationTimeStart: Long = _
+  var wholeIterationTime: Long = _
+  var wholeSimulationTime: Long = _
   var balancer: BalancerAlgo = _
   var toTakeCellsFrom: mutable.Map[WorkerId, (Double, Boolean)] = _
   var neutralNeigh: mutable.Map[WorkerId, (Double, Boolean)] = _
@@ -97,9 +113,38 @@ class WorkerActor[ConfigType <: XinukConfig](
       this.worldShard = world
       this.logger = LoggerFactory.getLogger(id.value.toString)
       logger.info("starting")
-      this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], balancerInfo.workersWithMiddlePoints, MetricFunctions.middlePointFar, ShouldGoDepth)
+      val slowAreaPlace: ImSet[CellId] = SimulationCase match {
+        case "areaMiddle" => ImSet.empty
+        case "areaLongRect" => ImSet.empty
+        case "areaHalf" => ImSet.empty
+        case "areaFreeBorders" => ImSet.empty
+        case _ => ImSet.empty
+      }
+      
+      val beginningCellsMetricsLog = if (ShouldLogChanges) {
+      val onlyCoords = worldShard.localCellIds.map(c => {
+        val gridCell = c.asInstanceOf[GridCellId]
+        (gridCell.x, gridCell.y)
+      })
+      onlyCoords.mkString(world.workerId.value.toString + "->" + this.id.value.toString + "_", "_", "")
+    } else {
+      ""
+    }
+      logMetrics(0, 0, 0, 0, beginningCellsMetricsLog, iterationMetrics)
+      this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], 
+                                       balancerInfo.workersWithMiddlePoints, 
+                                       MetricFunctions.middlePointFar, 
+                                       ShouldGoDepth, 
+                                       ShouldUseMetricOnAllFoundCells,
+                                       ShouldUpdateMiddlePoint,
+                                       IsAreaType, 
+                                       slowAreaPlace)
+      wholeIterationTimeStart = System.currentTimeMillis()
+      wholeSimulationTime = System.currentTimeMillis()
       planCreator.initialize(worldShard)
-      WorldCorrectnessChecker.initShards(world, logger, config)
+      if (ShouldCheckCorrectness) {
+        WorldCorrectnessChecker.initShards(world, logger, config)
+      }
       self ! StartIteration(1)
       unstashAll()
       context.become(started)
@@ -116,18 +161,24 @@ class WorkerActor[ConfigType <: XinukConfig](
     case StartIteration(iteration) if iteration > config.iterationsNumber =>
       logger.info("finalizing")
       planCreator.finalize(worldShard)
+      logger.info("whole simulation time: " + (System.currentTimeMillis() - wholeSimulationTime))
       logger.info("terminating")
       Thread.sleep(5000)
       context.system.terminate()
 
     case StartIteration(iteration) =>
+      wholeIterationTimeStart = System.currentTimeMillis()
       phaseTime = System.currentTimeMillis()
-      if(this.id == WorkerId(1) && iteration == 250) {
-        Thread.sleep(100)
-      }
       currentIteration = iteration
       iterationMetrics = emptyMetrics
       val plans: Seq[TargetedPlan] = worldShard.localCellIds.map(worldShard.cells(_)).flatMap(createPlans).toSeq
+      if (AffectedWorkers.contains(this.id)){
+        Thread.sleep((worldShard.localCellIds.size * SlowMultiplier).toInt)
+      }
+      if (IsAreaType && balancer.slowAreaSize > 0) {
+        Thread.sleep((balancer.slowAreaSize * SlowMultiplier).toInt)
+      }
+      
       val timeDiff = System.currentTimeMillis() - phaseTime
       distributePlans(currentIteration, plans)
       currentIterationTime = timeDiff
@@ -181,47 +232,49 @@ class WorkerActor[ConfigType <: XinukConfig](
           case (cellId, cellContents) => worldShard.cells(cellId).updateContents(cellContents)
         })
         remoteCellContentsStash.remove(currentIteration)
-
-        logMetrics(currentIteration, iterationMetrics)
         guiActors.foreach(_ ! GridInfo(iteration, worldShard.localCellIds.map(worldShard.cells(_)), iterationMetrics))
         if (iteration == 0) {
           blockAvgTime = currentIterationTime.toDouble
         } else {
           blockAvgTime = (blockAvgTime * (iteration-1) + currentIterationTime)/iteration
         }
-        logger.info(iteration.toString + " RemotePlans: " + blockAvgTime)
-        if(iteration == 20 && worldShard.workerId == WorkerId(1)){
-          logger.info("dupa")
-        }
         if (iteration % 100 == 0) logger.info(s"finished $iteration")
         if (iteration % StatisticsDistributionInterval == 0 && iteration > 0) {
-          worldShard.workerId.value match {
-            case 1 => blockAvgTime = 500.0
-            case 2 => blockAvgTime = 350.0
-            case 3 => blockAvgTime = 300.0
-            case 4 => blockAvgTime = 350.0
-            case _ => ()
+          if(SimulationCase == "mock") {
+            worldShard.workerId.value match {
+              case 1 => blockAvgTime = 350.0
+              case 2 => blockAvgTime = 500.0
+              case 3 => blockAvgTime = 500.0
+              case 4 => blockAvgTime = 350.0
+              case 5 => blockAvgTime = 370.0
+              case 6 => blockAvgTime = 370.0
+              case 7 => blockAvgTime = 370.0
+              case 8 => blockAvgTime = 370.0
+              case 9 => blockAvgTime = 370.0
+              case 10 => blockAvgTime = 370.0
+              case 11 => blockAvgTime = 370.0
+              case 12 => blockAvgTime = 370.0
+              case 13 => blockAvgTime = 370.0
+              case 14 => blockAvgTime = 370.0
+              case 15 => blockAvgTime = 370.0
+              case 16 => blockAvgTime = 370.0
+              case _ => ()
+            }
           }
           distributeStatistics(worldShard.workerId, blockAvgTime)
         } else {
+          wholeIterationTime = System.currentTimeMillis() - wholeIterationTimeStart
+          logMetrics(currentIteration, wholeIterationTime, currentIterationTime, blockAvgTime, "", iterationMetrics)
           self ! StartIteration(currentIteration + 1)
         }
       }
 
     case Statistics(iteration, neighbour, statisticsData) =>
       statisticsStash(iteration) += (neighbour -> statisticsData)
-      if(iteration > 10){
-        logger.info("Receive statistcs from: " + neighbour + "\n" + statisticsStash(iteration).toString())
-      }
       if (statisticsStash(iteration).size == balancer.workerCurrentNeighbours.size) {
-        statisticsStash(iteration).foreach(
-          s => balancer.neighboursPlanAvgTime(s._1).addStatisticsDataBlock(s._2))
-        
+        statisticsStash(iteration).foreach(s => balancer.neighboursPlanAvgTime(s._1).addStatisticsDataBlock(s._2))
         statisticsStash.remove(iteration)
 
-        if(iteration == 20 && (worldShard.workerId == WorkerId(1) || worldShard.workerId == WorkerId(4))){
-          logger.info("DUPA: ")
-        }
         if(iteration % BalancingInterval == 0 && iteration > 0){
           self ! StartBalancing(currentIteration)
         } else {
@@ -230,25 +283,22 @@ class WorkerActor[ConfigType <: XinukConfig](
       }
 
     case StartBalancing(iteration) =>
-      if(iteration == 20 && this.id == WorkerId(4)) {
-        logger.info("dupa")
-      }
       balancingPhase = 1
+      logger.info(iteration.toString + " Started balancing")
       //Czy poprawnie sortuje
       //Na pewno nie planTimeAvg
       val sortedTimes = balancer.neighboursPlanAvgTime.filter(n => worldShard.outgoingCells.keySet.contains(n._1))
         .map(n => {
-        val minimumNumberOfAdjacentCells = 4
-        if (worldShard.outgoingCells(n._1).size + worldShard.incomingCells(n._1).size < minimumNumberOfAdjacentCells) {
+        if (worldShard.outgoingCells(n._1).size + worldShard.incomingCells(n._1).size < MinimumNumberOfAdjacentCells) {
           (0, n._2.actualBlockValue, n._1)
         } else if (n._2.actualBlockValue > blockAvgTime) {
-          if (blockAvgTime / n._2.actualBlockValue <= 0.85) (1, n._2.actualBlockValue, n._1)
+          if (blockAvgTime / n._2.actualBlockValue <= MinimumDiffBetweenWorkers) (1, n._2.actualBlockValue, n._1)
           else (0, n._2.actualBlockValue, n._1)
         } else {
-          if (n._2.actualBlockValue / blockAvgTime <= 0.85) (-1, n._2.actualBlockValue, n._1)
+          if (n._2.actualBlockValue / blockAvgTime <= MinimumDiffBetweenWorkers) (-1, n._2.actualBlockValue, n._1)
           else (0, n._2.actualBlockValue, n._1)
       }
-      }).toSeq.sortBy(i => i._2)
+      }).toSeq
       val groups = sortedTimes.groupBy(i => i._1).map(i => i._1 -> i._2.map(ii => ii._3 -> (ii._2, false)).toMap)
       toTakeCellsFrom = mutable.Map.empty ++ groups.getOrElse(1, mutable.Map.empty)
       neutralNeigh = mutable.Map.empty ++ groups.getOrElse(0, mutable.Map.empty)
@@ -396,7 +446,9 @@ class WorkerActor[ConfigType <: XinukConfig](
       savedFixNeighbourhood.remove(iteration)
       
     case CellsTransfer(iteration, senderId, cells) =>
-      WorldCorrectnessChecker.addChanges((senderId, this.id, cells.localCellsToChange), iteration)
+      if(ShouldCheckCorrectness) {
+        WorldCorrectnessChecker.addChanges((senderId, this.id, cells.localCellsToChange), iteration)
+      }
       cellsToTransferReceive = cells
       if (balancingPhase == 2) {
         applyExpandingCells(iteration)
@@ -405,30 +457,13 @@ class WorkerActor[ConfigType <: XinukConfig](
       
     case UpdateNeighbourhoodEmpty(iteration, senderId) if balancingPhase >= 2 =>
       neighMsgFromStash(iteration) += senderId
-      if (!sendNeighAckMsgTo(iteration).contains(senderId)) {
-        sendNeighAckMsgTo(iteration) += senderId
-        if (balancingPhase > 2) {
-          send(regionRef, senderId, AcknowledgeUpdateNeighbourhood(iteration, this.id))
-        }
-      }
       if (!receiveNeighMsgFrom(iteration).contains(senderId)) {
-        addSenderToFutureReceiver(iteration, senderId)
         receiveNeighMsgFrom(iteration) += senderId
       }
       printAll(iteration, "UNe: " + balancingPhase)
-      if (balancingPhase == 2
-        && receiveNeighMsgFrom(iteration).size == neighMsgFromStash(iteration).size
-        && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size) {
-        balancingPhase = 3
-        sendNeighAckMsgTo(iteration).foreach(workerId => {
-          send(regionRef, workerId, AcknowledgeUpdateNeighbourhood(iteration, this.id))
-        })
-        receiveSyncMsgFrom(iteration) ++= sendNeighAckMsgTo(iteration)
-        sendSyncMsgTo(iteration) ++= sendNeighAckMsgTo(iteration)
-      }
       checkOrMoveToNextPhase(iteration)
       
-    case UpdateNeighbourhoodEmpty(iteration, senderId) if balancingPhase < 2 =>
+    case UpdateNeighbourhoodEmpty(iteration, senderId) =>
       savedUpdateNeighbourhoodEmpty(iteration) :+= UpdateNeighbourhoodEmpty(iteration, senderId)
       
     case UpdateNeighbourhood(iteration: Long,
@@ -438,16 +473,6 @@ class WorkerActor[ConfigType <: XinukConfig](
                              incomingCellsToRemove: ImSet[CellId],
                              newOutgoingCells: ImSet[CellId]) if balancingPhase >= 2 =>
       neighMsgFromStash(iteration) += newNeighbour
-      if (!sendNeighAckMsgTo(iteration).contains(newNeighbour)) {
-        sendNeighAckMsgTo(iteration) += newNeighbour
-        if(balancingPhase > 2) {
-          send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
-        }
-      }
-      if (!receiveNeighMsgFrom(iteration).contains(newNeighbour)) {
-        addSenderToFutureReceiver(iteration, newNeighbour)
-        receiveNeighMsgFrom(iteration) += newNeighbour
-      }
       val (diffNewInCells, diffInCells, diffOutCells) = balancer.fixNeighbourhood(
                                                       newNeighbour, 
                                                       oldNeighbour, 
@@ -464,6 +489,21 @@ class WorkerActor[ConfigType <: XinukConfig](
           diffInCells,
           newOutgoingCells))
         receiveFixingNeighAckMsgFrom(iteration) += bestWorkerWhoProposed
+        if (!receiveNeighMsgFrom(iteration).contains(newNeighbour)) {
+          receiveNeighMsgFrom(iteration) += newNeighbour
+          if (balancingPhase == 2) {
+            sendNeighAckMsgTo(iteration) += newNeighbour
+          }
+        }
+      } else if (!receiveNeighMsgFrom(iteration).contains(newNeighbour)) {
+        receiveNeighMsgFrom(iteration) += newNeighbour
+        if (balancingPhase == 2) {
+          sendNeighAckMsgTo(iteration) += newNeighbour
+        } else if (balancingPhase >= 3) {
+          send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
+          sendNeighAckMsgTo(iteration) += newNeighbour
+          receiveNeighAckMsgFrom(iteration) += newNeighbour
+        }
       }
       
       checkOrMoveToNextPhase(iteration)
@@ -476,7 +516,7 @@ class WorkerActor[ConfigType <: XinukConfig](
     oldNeighbour: WorkerId,
     newIncomingCells: ImSet[CellId],
     incomingCellsToRemove: ImSet[CellId],
-    newOutgoingCells: ImSet[CellId]) if balancingPhase < 2 =>
+    newOutgoingCells: ImSet[CellId])  =>
       savedUpdateNeighbourhood(iteration) :+= UpdateNeighbourhood(iteration, newNeighbour, oldNeighbour, newIncomingCells, incomingCellsToRemove, newOutgoingCells)
       
     case FixNeighbourhood(iteration: Long,
@@ -491,18 +531,20 @@ class WorkerActor[ConfigType <: XinukConfig](
                                 newIncomingCells, 
                                 incomingCellsToRemove, 
                                 newOutgoingCells)
-      send(regionRef, senderId, AcknowledgeFixNeighbourhood(iteration, this.id))
-      printAll(iteration, "FN: " + balancingPhase)
+      send(regionRef, senderId, AcknowledgeFixNeighbourhood(iteration, this.id, newNeighbour))
       if (diffNewIn.size != newIncomingCells.size || diffOldIn.size != incomingCellsToRemove.size || diffOut.size != newOutgoingCells.size) {
         if (balancingPhase == 2) {
           receiveNeighAckMsgFrom(iteration) += newNeighbour
         }
         if (balancingPhase >= 3 && !sendNeighAckMsgTo(iteration).contains(newNeighbour)) {
+          receiveNeighAckMsgFrom(iteration) += newNeighbour
           send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
+          sendNeighAckMsgTo(iteration) += newNeighbour
+          savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => self ! aun)
+          savedAcknowledgeUpdateNeighbourhood.remove(iteration)
         }
-        sendNeighAckMsgTo(iteration) += newNeighbour
-        addSenderToFutureReceiver(iteration, newNeighbour)
       }
+      printAll(iteration, "FN: " + balancingPhase)
       
       //if you got UN message and you cant apply whole changes to yourself then send remaining cells to worker that took your cells
       
@@ -515,29 +557,46 @@ class WorkerActor[ConfigType <: XinukConfig](
                           newOutgoingCells: ImSet[CellId]) =>
       savedFixNeighbourhood(iteration) :+= FixNeighbourhood(iteration, senderId, newNeighbour , oldNeighbour, newIncomingCells, incomingCellsToRemove, newOutgoingCells)
       
-    case AcknowledgeFixNeighbourhood(iteration, senderId) =>
+    case AcknowledgeFixNeighbourhood(iteration, senderId, newNeighbour) =>
       fixingNeighAckMsgFromStash(iteration) += senderId
+      if (balancingPhase >= 3){
+        savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => self ! aun)
+        savedAcknowledgeUpdateNeighbourhood.remove(iteration)
+        if (!sendNeighAckMsgTo(iteration).contains(newNeighbour)) {
+          send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
+          sendNeighAckMsgTo(iteration) += newNeighbour
+          receiveNeighAckMsgFrom(iteration) += newNeighbour
+        }
+      }
       printAll(iteration, "AFN: " + balancingPhase)
       checkOrMoveToNextPhase(iteration)
     //if you got FN then apply changes and response with AFN
       
     case AcknowledgeUpdateNeighbourhood(iteration, senderId) if balancingPhase >= 3 =>
-      neighAckMsgFromStash(iteration) += senderId
-      if (!receiveNeighAckMsgFrom(iteration).contains(senderId)) {
+      if (!receiveNeighAckMsgFrom(iteration).contains(senderId)){
         receiveNeighAckMsgFrom(iteration) += senderId
+        savedAcknowledgeUpdateNeighbourhood(iteration) :+= AcknowledgeUpdateNeighbourhood(iteration, senderId)
+      } else {
+        neighAckMsgFromStash(iteration) += senderId
+        if (!sendNeighAckMsgTo(iteration).contains(senderId)) {
+          send(regionRef, senderId, AcknowledgeUpdateNeighbourhood(iteration, senderId))
+          sendNeighAckMsgTo(iteration) += senderId
+        }
+        if (balancingPhase >= 4 && !sendSyncMsgTo(iteration).contains(senderId)) {
+          send(regionRef, senderId, SynchronizeBeforeStart(iteration, senderId))
+          sendSyncMsgTo(iteration) += senderId
+          receiveSyncMsgFrom(iteration) += senderId
+        }
+        
+        printAll(iteration, "NAck: " + balancingPhase)
+        checkOrMoveToNextPhase(iteration)
       }
-      if (!sendNeighAckMsgTo(iteration).contains(senderId)) {
-        send(regionRef, senderId, AcknowledgeUpdateNeighbourhood(iteration, senderId))
-        sendNeighAckMsgTo(iteration) += senderId
-      }
-      checkOrMoveToNextPhase(iteration)
       
     case AcknowledgeUpdateNeighbourhood(iteration, senderId) =>
       savedAcknowledgeUpdateNeighbourhood(iteration) :+= AcknowledgeUpdateNeighbourhood(iteration, senderId)
       //send if you got UN and AFN messages from workers you expected, send to all met node
       
     case SynchronizeBeforeStart(iteration, senderId) if balancingPhase >= 4 =>
-      
       syncMsgFromStash(iteration) += senderId
       if (!receiveSyncMsgFrom(iteration).contains(senderId)) {
         receiveSyncMsgFrom(iteration) += senderId
@@ -546,6 +605,12 @@ class WorkerActor[ConfigType <: XinukConfig](
         send(regionRef, senderId, SynchronizeBeforeStart(iteration, senderId))
         sendSyncMsgTo(iteration) += senderId
       }
+      if (balancingPhase == 5 && !sendSync2MsgTo(iteration).contains(senderId)) {
+        send(regionRef, senderId, SynchronizeBeforeStart2(iteration, senderId))
+        sendSync2MsgTo(iteration) += senderId
+        receiveSync2MsgFrom(iteration) += senderId
+      }
+      
       printAll(iteration, "S: " + balancingPhase)
       checkOrMoveToNextPhase(iteration)
       
@@ -561,6 +626,7 @@ class WorkerActor[ConfigType <: XinukConfig](
         send(regionRef, senderId, SynchronizeBeforeStart2(iteration, senderId))
         sendSync2MsgTo(iteration) += senderId
       }
+      
       printAll(iteration, "S2: " + balancingPhase)
       checkOrMoveToNextPhase(iteration)
       
@@ -629,26 +695,27 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def printAll(iteration: Long, additionMsg: String): Unit = {
-    logger.info("stash ;;; receive ;;; send\n" + additionMsg + "\n"
-      + "N: " + neighMsgFromStash(iteration).toString() + ";;;" + receiveNeighMsgFrom(iteration).toString() + ";;;" + sendNeighMsgTo(iteration).toString() + "\n"
-      + "NAck: " + neighAckMsgFromStash(iteration).toString() + ";;;" + receiveNeighAckMsgFrom(iteration).toString() + ";;;" + sendNeighAckMsgTo(iteration).toString() + "\n"
-      + "FN: " + fixingNeighAckMsgFromStash(iteration).toString() + ";;;" + receiveFixingNeighAckMsgFrom(iteration).toString() + "\n"
-      + "S1: " + syncMsgFromStash(iteration).toString() + ";;;" + receiveSyncMsgFrom(iteration).toString() + ";;;" + sendSyncMsgTo(iteration).toString() + "\n"
-      + "S2: " + sync2MsgFromStash(iteration).toString() + ";;;" + receiveSync2MsgFrom(iteration).toString() + ";;;" + sendSync2MsgTo(iteration).toString() + "\n")
+    if(IsDebugMode){
+      logger.info("stash ;;; receive ;;; send\n" + additionMsg + "\n"
+        + "N: " + neighMsgFromStash(iteration).toString() + ";;;" + receiveNeighMsgFrom(iteration).toString() + ";;;" + sendNeighMsgTo(iteration).toString() + "\n"
+        + "NAck: " + neighAckMsgFromStash(iteration).toString() + ";;;" + receiveNeighAckMsgFrom(iteration).toString() + ";;;" + sendNeighAckMsgTo(iteration).toString() + "\n"
+        + "FN: " + fixingNeighAckMsgFromStash(iteration).toString() + ";;;" + receiveFixingNeighAckMsgFrom(iteration).toString() + "\n"
+        + "S1: " + syncMsgFromStash(iteration).toString() + ";;;" + receiveSyncMsgFrom(iteration).toString() + ";;;" + sendSyncMsgTo(iteration).toString() + "\n"
+        + "S2: " + sync2MsgFromStash(iteration).toString() + ";;;" + receiveSync2MsgFrom(iteration).toString() + ";;;" + sendSync2MsgTo(iteration).toString() + "\n")
+    }
   }
   
   private def waitOrSendProposal(iteration: Long): Unit = {
     if (toTakeCellsFrom.isEmpty || toTakeCellsFrom.forall(i => i._2._2)) {
       if (toSendCellsTo.nonEmpty && !toSendCellsTo.forall(i => i._2._2)) {
-        waitForProposeFrom = toSendCellsTo.find(i => !i._2._2).get._1
+        waitForProposeFrom = toSendCellsTo.filter(i => !i._2._2).minBy(i => i._2._1)._1
       }
-    } else {
-      val sendProposeTo = toTakeCellsFrom.find(i => !i._2._2)
-      val amountParameter = 2
-      val numberOfCells = ((1.0 - blockAvgTime / sendProposeTo.get._2._1) / amountParameter * worldShard.localCellIds.size).toInt
-      send(regionRef, sendProposeTo.get._1, Proposal(iteration, this.id, numberOfCells))
-      toTakeCellsFrom(sendProposeTo.get._1) = (sendProposeTo.get._2._1, true)
-      sentProposeTo = sendProposeTo.get._1
+    } else if(toTakeCellsFrom.nonEmpty && toTakeCellsFrom.exists(i => !i._2._2)){
+      val sendProposeTo = toTakeCellsFrom.filter(i => !i._2._2).maxBy(i => i._2._1)
+      val numberOfCells = ((1.0 - blockAvgTime / sendProposeTo._2._1) / AmountCellsDivider * worldShard.localCellIds.size).toInt
+      send(regionRef, sendProposeTo._1, Proposal(iteration, this.id, numberOfCells))
+      toTakeCellsFrom(sendProposeTo._1) = (sendProposeTo._2._1, true)
+      sentProposeTo = sendProposeTo._1
     }
   }
   
@@ -661,25 +728,12 @@ class WorkerActor[ConfigType <: XinukConfig](
     sendCellsKeys.foreach(key => toSendCellsTo(key) = (toSendCellsTo(key)._1, true))
   }
   
-  private def addSenderToFutureReceiver(iteration: Long, senderId: WorkerId): Unit = {
-    if (balancingPhase >= 3) {
-      receiveNeighAckMsgFrom(iteration) += senderId
-    }
-    if (balancingPhase >= 4) {
-      receiveSyncMsgFrom(iteration) += senderId
-    }
-    if (balancingPhase == 5) {
-      receiveSync2MsgFrom(iteration) += senderId
-    }
-  }
-  
   private def checkOrMoveToNextPhase(iteration: Long): Unit = {
-    printAll(iteration, "check: " + balancingPhase)
     if(balancingPhase == 2
       && receiveNeighMsgFrom(iteration).size == neighMsgFromStash(iteration).size
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size) {
       balancingPhase = 3
-      receiveNeighAckMsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration))
+      receiveNeighAckMsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ sendNeighMsgTo(iteration))
       sendNeighAckMsgTo(iteration) ++= receiveNeighAckMsgFrom(iteration)
       sendNeighAckMsgTo(iteration).foreach(workerId => {
         send(regionRef, workerId, AcknowledgeUpdateNeighbourhood(iteration, this.id))
@@ -691,7 +745,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       && receiveNeighAckMsgFrom(iteration).size == neighAckMsgFromStash(iteration).size
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size) {
       balancingPhase = 4
-      receiveSyncMsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration))
+      receiveSyncMsgFrom(iteration) ++= (receiveNeighAckMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ sendNeighAckMsgTo(iteration) ++ sendNeighAckMsgTo(iteration))
       sendSyncMsgTo(iteration) ++= receiveSyncMsgFrom(iteration)
       sendSyncMsgTo(iteration).foreach(workerId => {
         send(regionRef, workerId, SynchronizeBeforeStart(iteration, this.id))
@@ -704,7 +758,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size
       && receiveSyncMsgFrom(iteration).size == syncMsgFromStash(iteration).size) {
       balancingPhase = 5
-      receiveSync2MsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ receiveSyncMsgFrom(iteration))
+      receiveSync2MsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ receiveNeighAckMsgFrom(iteration) ++ receiveSyncMsgFrom(iteration) ++ sendSyncMsgTo(iteration))
       sendSync2MsgTo(iteration) ++= receiveSync2MsgFrom(iteration)
       sendSync2MsgTo(iteration).foreach(workerId => {
         send(regionRef, workerId, SynchronizeBeforeStart2(iteration, this.id))
@@ -717,10 +771,19 @@ class WorkerActor[ConfigType <: XinukConfig](
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size
       && receiveSyncMsgFrom(iteration).size == syncMsgFromStash(iteration).size
       && receiveSync2MsgFrom(iteration).size == sync2MsgFromStash(iteration).size) {
-      //TODO: reset state
-      if (bestWorkerWhoProposed != defValueWorker) {
+      if (ShouldCheckCorrectness && bestWorkerWhoProposed != defValueWorker) {
         WorldCorrectnessChecker.checkIteration(iteration)
       }
+      val changeCellsMetricsLog = if (ShouldLogChanges && cellsToTransferReceive != null) {
+        val onlyCoords = cellsToTransferReceive.localCellsToChange.map(c => {
+          val gridCell = c.asInstanceOf[GridCellId]
+          (gridCell.x, gridCell.y)
+        })
+        onlyCoords.mkString(cellsToTransferReceive.workerId.value.toString + "->" + this.id.value.toString + "_", "_", "")
+      } else {
+        ""
+      }
+      
       sync2MsgFromStash.remove(iteration)
       syncMsgFromStash.remove(iteration)
       neighAckMsgFromStash.remove(iteration)
@@ -745,7 +808,9 @@ class WorkerActor[ConfigType <: XinukConfig](
       numberOfCellsToGive = 0
       cellsToTransferReceive = null
       balancingPhase = 0
-      logger.info("ENDED BALANCING")
+      wholeIterationTime = System.currentTimeMillis() - wholeIterationTimeStart
+      
+      logMetrics(currentIteration, wholeIterationTime, currentIterationTime, blockAvgTime, changeCellsMetricsLog, iterationMetrics)
       self ! StartIteration(iteration + 1)
     }
   }
@@ -768,10 +833,8 @@ class WorkerActor[ConfigType <: XinukConfig](
       cellsToTransferReceive.cellToWorker,
       cellsToTransferReceive.cellNeighbours)
     sendNeighMsgTo(iteration) ++= worldShard.outgoingCells.keySet
+    receiveNeighAckMsgFrom(iteration) ++= sendNeighMsgTo(iteration)
     sendNeighMsgTo(iteration).foreach(workerId => {
-      if(iteration == 20){
-        logger.info("dupa")
-      }
       val workerOutCells = outCells.getOrElse(workerId, ImSet.empty)
       val workerInCells = inCells.getOrElse(workerId, ImSet.empty)
       val workerOutToRemove = cellsToTransferReceive.neighboursOutgoingCellsToRemove.getOrElse(workerId, ImSet.empty)
@@ -800,7 +863,8 @@ class WorkerActor[ConfigType <: XinukConfig](
     distribute(
       balancer.workerCurrentNeighbours,
       balancer.workerCurrentNeighbours.zip(List.fill(balancer.workerCurrentNeighbours.size)(avgTime)).to(Map))(
-      0.0, { time => Statistics(currentIteration, senderId, new StatisticsData(time)) })
+      0.0, { time => 
+        Statistics(currentIteration, senderId, new StatisticsData(time)) })
   }
 
   private def distribute[A](keys: Set[WorkerId], groups: Map[WorkerId, A])(default: => A, msgCreator: A => Any): Unit = {
@@ -833,8 +897,8 @@ class WorkerActor[ConfigType <: XinukConfig](
       Set.empty, { data => RemoteCellContents(iteration, data.toSeq.map(id => (id, worldShard.cells(id).state.contents))) })
   }
 
-  private def logMetrics(iteration: Long, metrics: Metrics): Unit = {
-    logger.info(WorkerActor.MetricsMarker, "{};{}", iteration.toString, metrics: Any)
+  private def logMetrics(iteration: Long, wholeTime: Long, onlyWorkerTime: Long, lastBlockTime: Double, cellsChanges: String, metrics: Metrics): Unit = {
+    logger.info(WorkerActor.MetricsMarker, "{};{};{};{};{};{}", iteration.toString, wholeTime.toString, onlyWorkerTime.toString, lastBlockTime.toString, cellsChanges, metrics: Any)
   }
 
   private def flatGroup[A](seqs: Seq[Seq[A]])(idExtractor: A => CellId): Map[CellId, Seq[A]] = {
@@ -890,7 +954,7 @@ object WorkerActor {
   final case class RemoteCellContents private(iteration: Long, remoteCellContents: Seq[(CellId, CellContents)])
 
   final case class Statistics private(iteration: Long, senderId: WorkerId, statisticsData: StatisticsData)
-  
+
   final case class StartBalancing private(iteration: Long)
 
   final case class Proposal private(iteration: Long, senderId: WorkerId, numberOfCells: Int)
@@ -900,12 +964,12 @@ object WorkerActor {
   final case class Resignation private(iteration: Long, senderId: WorkerId)
 
   final case class StartUpdateNeighbourhood private(iteration: Long)
-  
+
   final case class CellsTransfer private(iteration: Long, senderId: WorkerId, cells: CellsToExpand)
 
   final case class UpdateNeighbourhoodEmpty private(iteration: Long, senderId: WorkerId)
-  
-  final case class UpdateNeighbourhood private(iteration: Long, 
+
+  final case class UpdateNeighbourhood private(iteration: Long,
                                                newNeighbour: WorkerId,
                                                oldNeighbour: WorkerId,
                                                newIncomingCells: ImSet[CellId],
@@ -922,7 +986,7 @@ object WorkerActor {
                                             incomingCellsToRemove: ImSet[CellId],
                                             newOutgoingCells: ImSet[CellId])
 
-  final case class AcknowledgeFixNeighbourhood private(iteration: Long, senderId: WorkerId)
+  final case class AcknowledgeFixNeighbourhood private(iteration: Long, senderId: WorkerId, newNeighbour: WorkerId)
 
   final case class SynchronizeBeforeStart private(iteration: Long, senderId: WorkerId)
 

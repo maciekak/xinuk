@@ -8,13 +8,19 @@ import scala.collection.mutable
 import scala.collection.mutable.{Map => MutableMap, Set => MutableSet}
 
 class BalancerAlgo(val worldShard: GridWorldShard,
-                   val balancingNeighbours: Map[WorkerId, (Int, Int)],
+                   var balancingNeighbours: Map[WorkerId, (Int, Int)],
                    val metricFun: ((Int, Int), GridCellId) => Double,
-                   val shouldGoDepth: Boolean = false) {
+                   val shouldGoDepth: Boolean = false,
+                   val shouldUseMetricOnAllFoundCells: Boolean = false,
+                   val shouldUpdateMiddlePoint: Boolean = false,
+                   val isAreaType: Boolean = false,
+                   val slowAreaPlace: Set[CellId] = Set.empty) {
 
   val neighboursPlanAvgTime: collection.mutable.Map[WorkerId, StatisticCollector] =
     collection.mutable.Map.empty[WorkerId, StatisticCollector] ++
       balancingNeighbours.keys.map(w => w -> new StatisticCollector).toMap
+      
+  var slowAreaSize: Int = slowAreaPlace.count(c => worldShard.localCellIds.contains(c))
       
   def workerCurrentNeighbours: mutable.Set[WorkerId] = {
     mutable.Set.empty ++ worldShard.outgoingCells.keySet
@@ -30,8 +36,23 @@ class BalancerAlgo(val worldShard: GridWorldShard,
                   cellNeighbours: Map[CellId, Map[Direction, CellId]]): (
       Map[WorkerId, Set[CellId]],
       Map[WorkerId, Set[CellId]]) = {
-
     worldShard.localCellIds ++= localCellsIds
+    
+    if (shouldUpdateMiddlePoint) {
+      //unefficient
+      val size = worldShard.localCellIds.size
+      val res = worldShard.localCellIds.foldLeft((0.0, 0.0))((v, cell) => {
+        val grid = cell.asInstanceOf[GridCellId]
+        (v._1 + grid.x, v._2 + grid.y)
+      })
+      val newPoint = ((res._1 / size).asInstanceOf[Int], (res._2 / size).asInstanceOf[Int])
+      balancingNeighbours = balancingNeighbours + (worldShard.workerId -> newPoint)
+    }
+    if (isAreaType) {
+      val newSize = localCellsIds.count(l => slowAreaPlace.contains(l))
+      slowAreaSize += newSize
+    }
+    
     worldShard.cells ++= cells
     
     val keysSet = cells.keySet
@@ -100,8 +121,24 @@ class BalancerAlgo(val worldShard: GridWorldShard,
                   newIncomingCells: Set[CellId],
                   newOutgoingCells: Set[CellId],
                   borderOfRemainingCells: Set[CellId]): Unit = {
-    
+
     worldShard.localCellIds --= localCellsIds
+    
+    if (shouldUpdateMiddlePoint) {
+      //unefficient
+      val size = worldShard.localCellIds.size
+      val res = worldShard.localCellIds.foldLeft((0.0, 0.0))((v, cell) => {
+        val grid = cell.asInstanceOf[GridCellId]
+        (v._1 + grid.x, v._2 + grid.y)
+      })
+      val newPoint = ((res._1 / size).asInstanceOf[Int], (res._2 / size).asInstanceOf[Int])
+      balancingNeighbours = balancingNeighbours + (worldShard.workerId -> newPoint)
+    }
+    if (isAreaType) {
+      val newSize = localCellsIds.count(l => slowAreaPlace.contains(l))
+      slowAreaSize -= newSize
+    }
+    
     worldShard.cells --= outgoingCellsToRemove
 
     worldShard.cellToWorker --= outgoingCellsToRemove
@@ -195,7 +232,9 @@ class BalancerAlgo(val worldShard: GridWorldShard,
 
   def findCells(workerId: WorkerId, quantity: Int): CellsToChange = {
 
-    val mask = balancingNeighbours(workerId)
+    val mask = balancingNeighbours(worldShard.workerId)
+    //uncomment line below to make tests work
+    //    val mask = balancingNeighbours(workerId)
     val gridCells = mutable.Set.empty[GridCellId] ++ worldShard.incomingCells(workerId).asInstanceOf[mutable.Set[GridCellId]] 
     val cellsToRemove = if (shouldGoDepth) takeMaxNCellsInDepth(gridCells, mask, quantity)
                         else takeMaxNCells(gridCells, mask, quantity)
@@ -280,7 +319,7 @@ class BalancerAlgo(val worldShard: GridWorldShard,
       quantity = worldShard.localCellIds.size - 1
     }
 
-    val takenCells = mutable.Set.empty[GridCellId]
+    var takenCells = mutable.Set.empty[GridCellId]
     while(takenCells.size + cells.size < quantity) {
       takenCells ++= cells
       cells = cells.flatMap(c => worldShard.cellNeighbours(c).values.filter(n => {
@@ -292,10 +331,13 @@ class BalancerAlgo(val worldShard: GridWorldShard,
     if(quantity == takenCells.size + cells.size){
       return (takenCells ++ cells).toSet
     }
+    
+    val cellsToCalc = if (shouldUseMetricOnAllFoundCells) cells ++ takenCells else cells
 
-    val withValue = cells.map(c => c -> metricFun(mask, c)).toSeq
+    val withValue = cellsToCalc.map(c => c -> metricFun(mask, c)).toSeq
     val sortedCells = withValue.sortBy(_._2).reverse.map(_._1)
-    takenCells ++= sortedCells.take(quantity - takenCells.size)
+    takenCells = if (shouldUseMetricOnAllFoundCells) mutable.Set.empty ++ sortedCells.take(quantity).toSet
+                 else takenCells ++ sortedCells.take(quantity - takenCells.size)
     takenCells.toSet.asInstanceOf[Set[CellId]]
   }
 
