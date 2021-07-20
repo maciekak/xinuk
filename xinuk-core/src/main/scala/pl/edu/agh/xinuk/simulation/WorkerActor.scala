@@ -26,24 +26,26 @@ class WorkerActor[ConfigType <: XinukConfig](
 
   import pl.edu.agh.xinuk.simulation.WorkerActor._
   
-  val IsDebugMode: Boolean = false
+  val IsDebugMode: Boolean = true
   val StatisticsDistributionInterval = 10
   val BalancingIntervalMultiplier = 1
   val BalancingInterval: Int = StatisticsDistributionInterval * BalancingIntervalMultiplier
-  val ShouldGoDepth: Boolean = false
+  val ShouldGoDepth: Boolean = true
   val ShouldUseMetricOnAllFoundCells: Boolean = false
   val ShouldUpdateMiddlePoint: Boolean = true
-  val ShouldCheckCorrectness: Boolean = false
+  val ShouldCheckCorrectness: Boolean = true
   val ShouldLogChanges: Boolean = true
-  val MinimumNumberOfAdjacentCells: Int = 4
+  val MinimumNumberOfAdjacentCells: Int = 9
   val MinimumDiffBetweenWorkers: Double = 0.85
   val AmountCellsDivider = 6
+  val BalancingMessageDelay = 1
   
   val AffectedWorkers: Seq[WorkerId] = Seq(WorkerId(2), WorkerId(5))
   val SlowMultiplier: Double = 0.7
   val SimulationCase: String = "workerCells"
   val IsAreaType: Boolean = SimulationCase.contains("area")
-  val SimulationCases: Seq[String] = Seq("none", "mock", "workerCells", "workerCellsSquare", "areaMiddle", "areaLongRect", "areaHalf", "areaFreeBorders")
+  val SimulationCases: Seq[String] = Seq("noBalancing", "none", "mock", "workerCells", "everyoneDifferentCellTime", "areaMiddle", "areaLongRect", "areaHalf", "areaFreeBorders", "agentType")
+  val DifferentCellTime: ImMap[WorkerId, Double] = ImMap(WorkerId(1) -> 1.2, WorkerId(2) -> 1.1, WorkerId(3) -> 2, WorkerId(4) -> 4, WorkerId(5) -> 5, WorkerId(6) -> 1.4, WorkerId(7) -> 2.5, WorkerId(8) -> 0.9, WorkerId(9) -> 0.3)
 
   val guiActors: mutable.Set[ActorRef] = mutable.Set.empty
   val plansStash: mutable.Map[Long, Seq[Seq[TargetedPlan]]] = mutable.Map.empty.withDefaultValue(Seq.empty)
@@ -96,6 +98,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   var sentProposeTo: WorkerId = _
   var takeCellsFrom: WorkerId = _
   var bestWorkerWhoProposed: WorkerId = _
+  var sentAcceptProposal: Boolean = false
   var numberOfCellsToGive: Int = _
   var cellsToTransferReceive: CellsToExpand = _
   var balancingPhase: Int = 0 
@@ -133,7 +136,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       logMetrics(0, 0, 0, 0, beginningCellsMetricsLog, iterationMetrics)
       this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], 
                                        balancerInfo.workersWithMiddlePoints, 
-                                       MetricFunctions.middlePointFar, 
+                                       MetricFunctions.middlePointClose, 
                                        ShouldGoDepth, 
                                        ShouldUseMetricOnAllFoundCells,
                                        ShouldUpdateMiddlePoint,
@@ -177,6 +180,9 @@ class WorkerActor[ConfigType <: XinukConfig](
       }
       if (IsAreaType && balancer.slowAreaSize > 0) {
         Thread.sleep((balancer.slowAreaSize * SlowMultiplier).toInt)
+      }
+      if (SimulationCase == "everyoneDifferentCellTime") {
+        Thread.sleep((DifferentCellTime(this.id) * SlowMultiplier * worldShard.localCellIds.size).toInt)
       }
       
       val timeDiff = System.currentTimeMillis() - phaseTime
@@ -239,25 +245,25 @@ class WorkerActor[ConfigType <: XinukConfig](
           blockAvgTime = (blockAvgTime * (iteration-1) + currentIterationTime)/iteration
         }
         if (iteration % 100 == 0) logger.info(s"finished $iteration")
-        if (iteration % StatisticsDistributionInterval == 0 && iteration > 0) {
+        if (SimulationCase != "noBalancing" && iteration % StatisticsDistributionInterval == 0 && iteration > 0) {
           if(SimulationCase == "mock") {
             worldShard.workerId.value match {
-              case 1 => blockAvgTime = 350.0
-              case 2 => blockAvgTime = 500.0
-              case 3 => blockAvgTime = 500.0
-              case 4 => blockAvgTime = 350.0
-              case 5 => blockAvgTime = 370.0
-              case 6 => blockAvgTime = 370.0
-              case 7 => blockAvgTime = 370.0
-              case 8 => blockAvgTime = 370.0
-              case 9 => blockAvgTime = 370.0
-              case 10 => blockAvgTime = 370.0
-              case 11 => blockAvgTime = 370.0
-              case 12 => blockAvgTime = 370.0
-              case 13 => blockAvgTime = 370.0
-              case 14 => blockAvgTime = 370.0
-              case 15 => blockAvgTime = 370.0
-              case 16 => blockAvgTime = 370.0
+              case 1 => blockAvgTime = worldShard.localCellIds.size * 1.001
+              case 2 => blockAvgTime = worldShard.localCellIds.size * 3
+              case 3 => blockAvgTime = worldShard.localCellIds.size * 1.002
+              case 4 => blockAvgTime = worldShard.localCellIds.size * 1.003
+              case 5 => blockAvgTime = worldShard.localCellIds.size * 4
+              case 6 => blockAvgTime = worldShard.localCellIds.size * 1.004
+              case 7 => blockAvgTime = worldShard.localCellIds.size * 1.005
+              case 8 => blockAvgTime = worldShard.localCellIds.size * 1.006
+              case 9 => blockAvgTime = worldShard.localCellIds.size * 1.007
+              case 10 => blockAvgTime = worldShard.localCellIds.size
+              case 11 => blockAvgTime = worldShard.localCellIds.size
+              case 12 => blockAvgTime = worldShard.localCellIds.size
+              case 13 => blockAvgTime = worldShard.localCellIds.size
+              case 14 => blockAvgTime = worldShard.localCellIds.size
+              case 15 => blockAvgTime = worldShard.localCellIds.size
+              case 16 => blockAvgTime = worldShard.localCellIds.size
               case _ => ()
             }
           }
@@ -305,12 +311,20 @@ class WorkerActor[ConfigType <: XinukConfig](
       toSendCellsTo = mutable.Map.empty ++ groups.getOrElse(-1, mutable.Map.empty)
       
       neutralNeigh.foreach(item => {
+        logConditional(" -> " + item._1 + " send Resignation")
+        msgDelay()
         send(regionRef, item._1, Resignation(iteration, this.id))
       })
       neutralNeigh = neutralNeigh.map(n => (n._1, (n._2._1, true)))
       waitOrSendProposal(iteration)
-      savedProposal(iteration).foreach(prop => self ! prop)
-      savedResignation(iteration).foreach(res => self ! res)
+      savedProposal(iteration).foreach(prop => {
+        logConditional(" -> " + "self" + " send Proposal")
+        self ! prop
+      })
+      savedResignation(iteration).foreach(res => {
+        logConditional(" -> " + "self" + " send Resignation")
+        self ! res
+      })
       savedProposal.remove(iteration)
       savedResignation.remove(iteration)
       
@@ -319,10 +333,13 @@ class WorkerActor[ConfigType <: XinukConfig](
       //for best to take send P
       //for rest wait
     case Proposal(iteration, senderId, numberOfCells) if balancingPhase == 1 =>
+      logConditional(" -> " + senderId + " receive Proposal")
       senderId match {
         case _ if waitForProposeFrom == senderId =>
           bestWorkerWhoProposed = senderId
           numberOfCellsToGive = numberOfCells
+          logConditional(" -> " + bestWorkerWhoProposed + " send AcceptProposal")
+          msgDelay()
           send(regionRef, bestWorkerWhoProposed, AcceptProposal(iteration, this.id))
           toSendCellsTo(senderId) = (toSendCellsTo(senderId)._1, true)
           sendResignationToRestWorkers(iteration)
@@ -330,17 +347,14 @@ class WorkerActor[ConfigType <: XinukConfig](
         case _ if !toSendCellsTo(senderId)._2 =>
           bestWorkerWhoProposed = senderId
           numberOfCellsToGive = numberOfCells
-          var startMarking = false
+          val bestProposalTime = toSendCellsTo(senderId)._1
           toSendCellsTo = toSendCellsTo.map(c => {
-            if (startMarking) {
-              if (!c._2._2) {
-                send(regionRef, c._1, Resignation(iteration, this.id))
-              }
+            if (!c._2._2 && bestProposalTime < c._2._1) {
+              logConditional(" -> " + c._1 + " send Resignation")
+              msgDelay()
+              send(regionRef, c._1, Resignation(iteration, this.id))
               c._1 -> (c._2._1, true)
             } else {
-              if (c._1 == senderId) {
-                startMarking = true
-              }
               c._1 -> (c._2._1, c._2._2)
             }
           })
@@ -356,8 +370,10 @@ class WorkerActor[ConfigType <: XinukConfig](
       proposeOrResignationStash(iteration) += senderId
       checkIfShouldGoToFixingNeighPhase(iteration)
     case Proposal(iteration, senderId, numberOfCells) =>
+      logConditional(" -> " + senderId + " receive save Proposal")
       savedProposal(iteration) :+= Proposal(iteration, senderId, numberOfCells)
-    case AcceptProposal(iteration, senderId) => 
+    case AcceptProposal(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive AcceptProposal")
       takeCellsFrom = sentProposeTo
       sentProposeTo = defValueWorker
       sendResignationToRestWorkers(iteration)
@@ -367,33 +383,44 @@ class WorkerActor[ConfigType <: XinukConfig](
       //send R to rest workers
       //check if response wasnt last and got to second phase
     case Resignation(iteration, senderId) if balancingPhase == 1 =>
+      logConditional(" -> " + senderId + " receive Resignation")
       senderId match {
         case sid if waitForProposeFrom == senderId =>
           waitForProposeFrom = defValueWorker
           if (!toSendCellsTo(senderId)._2) {
+            logConditional(" -> " + senderId + " send Resignation")
+            msgDelay()
             send(regionRef, senderId, Resignation(iteration, this.id))
           }
           toSendCellsTo(senderId) = (toSendCellsTo(senderId)._1, true)
           waitOrSendProposal(iteration)
-          if (waitForProposeFrom != defValueWorker && waitForProposeFrom == bestWorkerWhoProposed) {
-            send(regionRef, bestWorkerWhoProposed, AcceptProposal(iteration, this.id))
-            toSendCellsTo(bestWorkerWhoProposed) = (toSendCellsTo(bestWorkerWhoProposed)._1, true)
-            sendResignationToRestWorkers(iteration)
-          }
         case sid if sentProposeTo == senderId =>
           sentProposeTo = defValueWorker
           if (!toTakeCellsFrom(senderId)._2) {
+            logConditional(" -> " + senderId + " send Resignation")
+            msgDelay()
             send(regionRef, senderId, Resignation(iteration, this.id))
           }
           toTakeCellsFrom(senderId) = (toTakeCellsFrom(senderId)._1, true)
           waitOrSendProposal(iteration)
         case sid if toTakeCellsFrom.contains(senderId) && !toTakeCellsFrom(senderId)._2 =>
+          logConditional(" -> " + senderId + " send Resignation")
+          msgDelay()
           send(regionRef, senderId, Resignation(iteration, this.id))
           toTakeCellsFrom(senderId) = (toTakeCellsFrom(senderId)._1, true)
         case sid if toSendCellsTo.contains(senderId) && !toSendCellsTo(senderId)._2 =>
+          logConditional(" -> " + senderId + " send Resignation")
+          msgDelay()
           send(regionRef, senderId, Resignation(iteration, this.id))
           toSendCellsTo(senderId) = (toSendCellsTo(senderId)._1, true)
         case _ => ()
+      }
+      if (waitForProposeFrom != defValueWorker && waitForProposeFrom == bestWorkerWhoProposed) {
+        logConditional(" -> " + bestWorkerWhoProposed + " send AcceptProposal")
+        msgDelay()
+        send(regionRef, bestWorkerWhoProposed, AcceptProposal(iteration, this.id))
+        toSendCellsTo(bestWorkerWhoProposed) = (toSendCellsTo(bestWorkerWhoProposed)._1, true)
+        sendResignationToRestWorkers(iteration)
       }
       proposeOrResignationStash(iteration) += senderId
       checkIfShouldGoToFixingNeighPhase(iteration)
@@ -402,9 +429,11 @@ class WorkerActor[ConfigType <: XinukConfig](
       //if there is no next one accept best proposal from you
       //if this message was last in this phase went to next phase
     case Resignation(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive save StartUpdateNeighbourhood")
       savedResignation(iteration) :+= Resignation(iteration, senderId)
     case StartUpdateNeighbourhood(iteration) =>
       balancingPhase = 2
+      logConditional("receive StartUpdateNeighbourhood")
       proposeOrResignationStash.remove(iteration)
       sendNeighMsgTo(iteration) ++= balancer.workerCurrentNeighbours
       receiveNeighMsgFrom(iteration) ++= balancer.workerCurrentNeighbours
@@ -432,20 +461,32 @@ class WorkerActor[ConfigType <: XinukConfig](
           cellsToChange.cellToWorker,
           cellsToChange.cellNeighbours,
           cellsToChange.neighboursOutgoingCellsToRemove)
+        logConditional(" -> " + bestWorkerWhoProposed + " send CellsTransfer")
+        msgDelay()
         send(regionRef, bestWorkerWhoProposed, CellsTransfer(iteration, this.id, cellsToSend))
         distributeEmptyNeighUpdate(iteration)
       } else if (takeCellsFrom == defValueWorker) {
         distributeEmptyNeighUpdate(iteration)
       }
       
-      savedUpdateNeighbourhood(iteration).foreach(un => self ! un)
-      savedUpdateNeighbourhoodEmpty(iteration).foreach(une => self ! une)
-      savedFixNeighbourhood(iteration).foreach(fn => self ! fn)
+      savedUpdateNeighbourhood(iteration).foreach(un => {
+        logConditional(" -> " + "self" + " send UpdateNeighbourhood")
+        self ! un
+      })
+      savedUpdateNeighbourhoodEmpty(iteration).foreach({ une =>
+        logConditional(" -> " + "self" + " send UpdateNeighbourhoodEmpty")
+        self ! une 
+      })
+      savedFixNeighbourhood(iteration).foreach(fn => {
+        logConditional(" -> " + "self" + " send FixNeighbourhood")
+        self ! fn
+      })
       savedUpdateNeighbourhood.remove(iteration)
       savedUpdateNeighbourhoodEmpty.remove(iteration)
       savedFixNeighbourhood.remove(iteration)
       
     case CellsTransfer(iteration, senderId, cells) =>
+      logConditional(" -> " + senderId + " receive CellsTransfer in phase: " + balancingPhase)
       if(ShouldCheckCorrectness) {
         WorldCorrectnessChecker.addChanges((senderId, this.id, cells.localCellsToChange), iteration)
       }
@@ -456,6 +497,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       //Add that cells to yourself and go to neighbour fixing phase
       
     case UpdateNeighbourhoodEmpty(iteration, senderId) if balancingPhase >= 2 =>
+      logConditional(" -> " + senderId + " receive UpdateNeighbourhoodEmpty")
       neighMsgFromStash(iteration) += senderId
       if (!receiveNeighMsgFrom(iteration).contains(senderId)) {
         receiveNeighMsgFrom(iteration) += senderId
@@ -464,6 +506,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       checkOrMoveToNextPhase(iteration)
       
     case UpdateNeighbourhoodEmpty(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive save UpdateNeighbourhoodEmpty")
       savedUpdateNeighbourhoodEmpty(iteration) :+= UpdateNeighbourhoodEmpty(iteration, senderId)
       
     case UpdateNeighbourhood(iteration: Long,
@@ -472,6 +515,7 @@ class WorkerActor[ConfigType <: XinukConfig](
                              newIncomingCells: ImSet[CellId],
                              incomingCellsToRemove: ImSet[CellId],
                              newOutgoingCells: ImSet[CellId]) if balancingPhase >= 2 =>
+      logConditional(" -> " + newNeighbour + " receive UpdateNeighbourhood")
       neighMsgFromStash(iteration) += newNeighbour
       val (diffNewInCells, diffInCells, diffOutCells) = balancer.fixNeighbourhood(
                                                       newNeighbour, 
@@ -481,6 +525,8 @@ class WorkerActor[ConfigType <: XinukConfig](
                                                       newOutgoingCells)
       
       if (bestWorkerWhoProposed != defValueWorker && (diffNewInCells.nonEmpty || diffInCells.nonEmpty || diffOutCells.nonEmpty)) {
+        logConditional(" -> " + bestWorkerWhoProposed + " send FixNeighbourhood")
+        msgDelay()
         send(regionRef, bestWorkerWhoProposed, FixNeighbourhood(iteration,
           this.id,
           newNeighbour,
@@ -500,6 +546,8 @@ class WorkerActor[ConfigType <: XinukConfig](
         if (balancingPhase == 2) {
           sendNeighAckMsgTo(iteration) += newNeighbour
         } else if (balancingPhase >= 3) {
+          logConditional(" -> " + newNeighbour + " send AcknowledgeUpdateNeighbourhood")
+          msgDelay()
           send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
           sendNeighAckMsgTo(iteration) += newNeighbour
           receiveNeighAckMsgFrom(iteration) += newNeighbour
@@ -517,6 +565,7 @@ class WorkerActor[ConfigType <: XinukConfig](
     newIncomingCells: ImSet[CellId],
     incomingCellsToRemove: ImSet[CellId],
     newOutgoingCells: ImSet[CellId])  =>
+      logConditional(" -> " + newNeighbour + " receive save UpdateNeighbourhood")
       savedUpdateNeighbourhood(iteration) :+= UpdateNeighbourhood(iteration, newNeighbour, oldNeighbour, newIncomingCells, incomingCellsToRemove, newOutgoingCells)
       
     case FixNeighbourhood(iteration: Long,
@@ -526,11 +575,14 @@ class WorkerActor[ConfigType <: XinukConfig](
                           newIncomingCells: ImSet[CellId],
                           incomingCellsToRemove: ImSet[CellId],
                           newOutgoingCells: ImSet[CellId]) if balancingPhase >= 2 =>
+      logConditional(" -> " + senderId + " receive FixNeighbourhood")
       val (diffNewIn, diffOldIn, diffOut) = balancer.fixNeighbourhood(newNeighbour, 
                                 oldNeighbour, 
                                 newIncomingCells, 
                                 incomingCellsToRemove, 
                                 newOutgoingCells)
+      logConditional(" -> " + senderId + " receive AcknowledgeFixNeighbourhood")
+      msgDelay()
       send(regionRef, senderId, AcknowledgeFixNeighbourhood(iteration, this.id, newNeighbour))
       if (diffNewIn.size != newIncomingCells.size || diffOldIn.size != incomingCellsToRemove.size || diffOut.size != newOutgoingCells.size) {
         if (balancingPhase == 2) {
@@ -538,9 +590,14 @@ class WorkerActor[ConfigType <: XinukConfig](
         }
         if (balancingPhase >= 3 && !sendNeighAckMsgTo(iteration).contains(newNeighbour)) {
           receiveNeighAckMsgFrom(iteration) += newNeighbour
+          logConditional(" -> " + newNeighbour + " send AcknowledgeUpdateNeighbourhood")
+          msgDelay()
           send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
           sendNeighAckMsgTo(iteration) += newNeighbour
-          savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => self ! aun)
+          savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => {
+            logConditional(" -> " + "self" + " send AcknowledgeUpdateNeighbourhood")
+            self ! aun
+          })
           savedAcknowledgeUpdateNeighbourhood.remove(iteration)
         }
       }
@@ -555,14 +612,21 @@ class WorkerActor[ConfigType <: XinukConfig](
                           newIncomingCells: ImSet[CellId],
                           incomingCellsToRemove: ImSet[CellId],
                           newOutgoingCells: ImSet[CellId]) =>
+      logConditional(" -> " + senderId + " receive save FixNeighbourhood")
       savedFixNeighbourhood(iteration) :+= FixNeighbourhood(iteration, senderId, newNeighbour , oldNeighbour, newIncomingCells, incomingCellsToRemove, newOutgoingCells)
       
     case AcknowledgeFixNeighbourhood(iteration, senderId, newNeighbour) =>
+      logConditional(" -> " + senderId + " receive AcknowledgeFixNeighbourhood")
       fixingNeighAckMsgFromStash(iteration) += senderId
       if (balancingPhase >= 3){
-        savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => self ! aun)
+        savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => {
+          logConditional(" -> " + "self" + " send AcknowledgeUpdateNeighbourhood AcknowledgeFixNeighbourhood")
+          self ! aun
+        })
         savedAcknowledgeUpdateNeighbourhood.remove(iteration)
         if (!sendNeighAckMsgTo(iteration).contains(newNeighbour)) {
+          logConditional(" -> " + newNeighbour + " send AcknowledgeUpdateNeighbourhood")
+          msgDelay()
           send(regionRef, newNeighbour, AcknowledgeUpdateNeighbourhood(iteration, this.id))
           sendNeighAckMsgTo(iteration) += newNeighbour
           receiveNeighAckMsgFrom(iteration) += newNeighbour
@@ -575,14 +639,20 @@ class WorkerActor[ConfigType <: XinukConfig](
     case AcknowledgeUpdateNeighbourhood(iteration, senderId) if balancingPhase >= 3 =>
       if (!receiveNeighAckMsgFrom(iteration).contains(senderId)){
         receiveNeighAckMsgFrom(iteration) += senderId
+        logConditional(" -> " + senderId + " receive SAVE AcknowledgeUpdateNeighbourhood")
         savedAcknowledgeUpdateNeighbourhood(iteration) :+= AcknowledgeUpdateNeighbourhood(iteration, senderId)
       } else {
+        logConditional(" -> " + senderId + " receive AcknowledgeUpdateNeighbourhood")
         neighAckMsgFromStash(iteration) += senderId
         if (!sendNeighAckMsgTo(iteration).contains(senderId)) {
+          logConditional(" -> " + senderId + " send AcknowledgeUpdateNeighbourhood")
+          msgDelay()
           send(regionRef, senderId, AcknowledgeUpdateNeighbourhood(iteration, senderId))
           sendNeighAckMsgTo(iteration) += senderId
         }
         if (balancingPhase >= 4 && !sendSyncMsgTo(iteration).contains(senderId)) {
+          logConditional(" -> " + senderId + " send SynchronizeBeforeStart")
+          msgDelay()
           send(regionRef, senderId, SynchronizeBeforeStart(iteration, senderId))
           sendSyncMsgTo(iteration) += senderId
           receiveSyncMsgFrom(iteration) += senderId
@@ -593,19 +663,25 @@ class WorkerActor[ConfigType <: XinukConfig](
       }
       
     case AcknowledgeUpdateNeighbourhood(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive save AcknowledgeUpdateNeighbourhood")
       savedAcknowledgeUpdateNeighbourhood(iteration) :+= AcknowledgeUpdateNeighbourhood(iteration, senderId)
       //send if you got UN and AFN messages from workers you expected, send to all met node
       
     case SynchronizeBeforeStart(iteration, senderId) if balancingPhase >= 4 =>
       syncMsgFromStash(iteration) += senderId
+      logConditional(" -> " + senderId + " receive SynchronizeBeforeStart")
       if (!receiveSyncMsgFrom(iteration).contains(senderId)) {
         receiveSyncMsgFrom(iteration) += senderId
       }
       if (!sendSyncMsgTo(iteration).contains(senderId)) {
+        logConditional(" -> " + senderId + " send SynchronizeBeforeStart")
+        msgDelay()
         send(regionRef, senderId, SynchronizeBeforeStart(iteration, senderId))
         sendSyncMsgTo(iteration) += senderId
       }
       if (balancingPhase == 5 && !sendSync2MsgTo(iteration).contains(senderId)) {
+        logConditional(" -> " + senderId + " send SynchronizeBeforeStart2")
+        msgDelay()
         send(regionRef, senderId, SynchronizeBeforeStart2(iteration, senderId))
         sendSync2MsgTo(iteration) += senderId
         receiveSync2MsgFrom(iteration) += senderId
@@ -615,14 +691,18 @@ class WorkerActor[ConfigType <: XinukConfig](
       checkOrMoveToNextPhase(iteration)
       
     case SynchronizeBeforeStart(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive save SynchronizeBeforeStart")
       savedSynchronizeBeforeStart(iteration) :+= SynchronizeBeforeStart(iteration, senderId)
       
     case SynchronizeBeforeStart2(iteration, senderId) if balancingPhase == 5 =>
       sync2MsgFromStash(iteration) += senderId
+      logConditional(" -> " + senderId + " receive SynchronizeBeforeStart2")
       if (!receiveSync2MsgFrom(iteration).contains(senderId)) {
         receiveSync2MsgFrom(iteration) += senderId
       }
       if (!sendSync2MsgTo(iteration).contains(senderId)) {
+        logConditional(" -> " + senderId + " send SynchronizeBeforeStart2")
+        msgDelay()
         send(regionRef, senderId, SynchronizeBeforeStart2(iteration, senderId))
         sendSync2MsgTo(iteration) += senderId
       }
@@ -631,6 +711,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       checkOrMoveToNextPhase(iteration)
       
     case SynchronizeBeforeStart2(iteration, senderId) =>
+      logConditional(" -> " + senderId + " receive save SynchronizeBeforeStart2")
       savedSynchronizeBeforeStart2(iteration) :+= SynchronizeBeforeStart2(iteration, senderId)
   }
 
@@ -656,8 +737,6 @@ class WorkerActor[ConfigType <: XinukConfig](
   private def processPlans(plans: Seq[TargetedPlan]): (Seq[TargetedPlan], Seq[TargetedPlan]) = {
     plans.partition { plan =>
       if (validatePlan(plan)) {
-        if(currentIteration == 11){
-        }
         applyUpdate(plan.action)
         true
       } else {
@@ -696,12 +775,17 @@ class WorkerActor[ConfigType <: XinukConfig](
   
   private def printAll(iteration: Long, additionMsg: String): Unit = {
     if(IsDebugMode){
-      logger.info("stash ;;; receive ;;; send\n" + additionMsg + "\n"
-        + "N: " + neighMsgFromStash(iteration).toString() + ";;;" + receiveNeighMsgFrom(iteration).toString() + ";;;" + sendNeighMsgTo(iteration).toString() + "\n"
-        + "NAck: " + neighAckMsgFromStash(iteration).toString() + ";;;" + receiveNeighAckMsgFrom(iteration).toString() + ";;;" + sendNeighAckMsgTo(iteration).toString() + "\n"
-        + "FN: " + fixingNeighAckMsgFromStash(iteration).toString() + ";;;" + receiveFixingNeighAckMsgFrom(iteration).toString() + "\n"
-        + "S1: " + syncMsgFromStash(iteration).toString() + ";;;" + receiveSyncMsgFrom(iteration).toString() + ";;;" + sendSyncMsgTo(iteration).toString() + "\n"
-        + "S2: " + sync2MsgFromStash(iteration).toString() + ";;;" + receiveSync2MsgFrom(iteration).toString() + ";;;" + sendSync2MsgTo(iteration).toString() + "\n")
+      val text = "stash ;;; receive ;;; send - it: " + iteration + "\n" + additionMsg + "\n" + "N: " + neighMsgFromStash(iteration).toString() + ";;;" + receiveNeighMsgFrom(iteration).toString() + ";;;" + sendNeighMsgTo(iteration).toString() + "\n"        + "NAck: " + neighAckMsgFromStash(iteration).toString() + ";;;" + receiveNeighAckMsgFrom(iteration).toString() + ";;;" + sendNeighAckMsgTo(iteration).toString() + "\n"        + "FN: " + fixingNeighAckMsgFromStash(iteration).toString() + ";;;" + receiveFixingNeighAckMsgFrom(iteration).toString() + "\n"        + "S1: " + syncMsgFromStash(iteration).toString() + ";;;" + receiveSyncMsgFrom(iteration).toString() + ";;;" + sendSyncMsgTo(iteration).toString() + "\n"        + "S2: " + sync2MsgFromStash(iteration).toString() + ";;;" + receiveSync2MsgFrom(iteration).toString() + ";;;" + sendSync2MsgTo(iteration).toString() + "\n"
+      logger.info(text)
+
+      logDebugData(currentIteration, text, emptyMetrics)
+    }
+  }
+  
+  private def logConditional(info: String): Unit = {
+    if (IsDebugMode) {
+      logDebugData(currentIteration, info, emptyMetrics)
+      logger.info(info)
     }
   }
   
@@ -713,6 +797,8 @@ class WorkerActor[ConfigType <: XinukConfig](
     } else if(toTakeCellsFrom.nonEmpty && toTakeCellsFrom.exists(i => !i._2._2)){
       val sendProposeTo = toTakeCellsFrom.filter(i => !i._2._2).maxBy(i => i._2._1)
       val numberOfCells = ((1.0 - blockAvgTime / sendProposeTo._2._1) / AmountCellsDivider * worldShard.localCellIds.size).toInt
+      logConditional(" -> " + sendProposeTo._1 + " send Proposal")
+      msgDelay()
       send(regionRef, sendProposeTo._1, Proposal(iteration, this.id, numberOfCells))
       toTakeCellsFrom(sendProposeTo._1) = (sendProposeTo._2._1, true)
       sentProposeTo = sendProposeTo._1
@@ -723,6 +809,11 @@ class WorkerActor[ConfigType <: XinukConfig](
     val takeCellsKeys = toTakeCellsFrom.filter(n => !n._2._2).keys
     val sendCellsKeys = toSendCellsTo.filter(n => !n._2._2).keys
     val toSendResignation = (takeCellsKeys ++ sendCellsKeys).toSet
+    toSendResignation.foreach(workerId => {
+      logConditional(" -> " + workerId + " send Resignation")
+      msgDelay()
+      send(regionRef, workerId, Resignation(iteration, this.id))
+    })
     distribute(mutable.Set.empty ++ toSendResignation, mutable.Map.empty ++ toSendResignation.map(n => n -> this.id).toMap)(this.id, id => Resignation(iteration, id))
     takeCellsKeys.foreach(key => toTakeCellsFrom(key) = (toTakeCellsFrom(key)._1, true))
     sendCellsKeys.foreach(key => toSendCellsTo(key) = (toSendCellsTo(key)._1, true))
@@ -736,9 +827,14 @@ class WorkerActor[ConfigType <: XinukConfig](
       receiveNeighAckMsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ sendNeighMsgTo(iteration))
       sendNeighAckMsgTo(iteration) ++= receiveNeighAckMsgFrom(iteration)
       sendNeighAckMsgTo(iteration).foreach(workerId => {
+        logConditional(" -> " + workerId + " send AcknowledgeUpdateNeighbourhood")
+        msgDelay()
         send(regionRef, workerId, AcknowledgeUpdateNeighbourhood(iteration, this.id))
       })
-      savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => self ! aun)
+      savedAcknowledgeUpdateNeighbourhood(iteration).foreach(aun => {
+        logConditional(" -> " + "self" + " send AcknowledgeUpdateNeighbourhood")
+        self ! aun
+      })
       savedAcknowledgeUpdateNeighbourhood.remove(iteration)
     } 
     else if (balancingPhase == 3
@@ -748,9 +844,14 @@ class WorkerActor[ConfigType <: XinukConfig](
       receiveSyncMsgFrom(iteration) ++= (receiveNeighAckMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ sendNeighAckMsgTo(iteration) ++ sendNeighAckMsgTo(iteration))
       sendSyncMsgTo(iteration) ++= receiveSyncMsgFrom(iteration)
       sendSyncMsgTo(iteration).foreach(workerId => {
+        logConditional(" -> " + workerId + " send SynchronizeBeforeStart")
+        msgDelay()
         send(regionRef, workerId, SynchronizeBeforeStart(iteration, this.id))
       })
-      savedSynchronizeBeforeStart(iteration).foreach(sbs => self ! sbs)
+      savedSynchronizeBeforeStart(iteration).foreach(sbs => {
+        logConditional(" -> " + "self" + " send SynchronizeBeforeStart")
+        self ! sbs
+      })
       savedSynchronizeBeforeStart.remove(iteration)
     } 
     else if (balancingPhase == 4
@@ -761,9 +862,14 @@ class WorkerActor[ConfigType <: XinukConfig](
       receiveSync2MsgFrom(iteration) ++= (receiveNeighMsgFrom(iteration) ++ receiveFixingNeighAckMsgFrom(iteration) ++ receiveNeighAckMsgFrom(iteration) ++ receiveSyncMsgFrom(iteration) ++ sendSyncMsgTo(iteration))
       sendSync2MsgTo(iteration) ++= receiveSync2MsgFrom(iteration)
       sendSync2MsgTo(iteration).foreach(workerId => {
+        logConditional(" -> " + workerId + " send SynchronizeBeforeStart2")
+        msgDelay()
         send(regionRef, workerId, SynchronizeBeforeStart2(iteration, this.id))
       })
-      savedSynchronizeBeforeStart2(iteration).foreach(sbs2 => self ! sbs2)
+      savedSynchronizeBeforeStart2(iteration).foreach(sbs2 => {
+        logConditional(" -> " + "self" + " send SynchronizeBeforeStart2")
+        self ! sbs2
+      })
       savedSynchronizeBeforeStart2.remove(iteration)
     } 
     else if (balancingPhase == 5
@@ -771,9 +877,6 @@ class WorkerActor[ConfigType <: XinukConfig](
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size
       && receiveSyncMsgFrom(iteration).size == syncMsgFromStash(iteration).size
       && receiveSync2MsgFrom(iteration).size == sync2MsgFromStash(iteration).size) {
-      if (ShouldCheckCorrectness && bestWorkerWhoProposed != defValueWorker) {
-        WorldCorrectnessChecker.checkIteration(iteration)
-      }
       val changeCellsMetricsLog = if (ShouldLogChanges && cellsToTransferReceive != null) {
         val onlyCoords = cellsToTransferReceive.localCellsToChange.map(c => {
           val gridCell = c.asInstanceOf[GridCellId]
@@ -804,13 +907,17 @@ class WorkerActor[ConfigType <: XinukConfig](
       waitForProposeFrom = defValueWorker
       sentProposeTo = defValueWorker
       takeCellsFrom = defValueWorker
-      bestWorkerWhoProposed = defValueWorker
+      sentAcceptProposal = false
       numberOfCellsToGive = 0
       cellsToTransferReceive = null
       balancingPhase = 0
       wholeIterationTime = System.currentTimeMillis() - wholeIterationTimeStart
       
       logMetrics(currentIteration, wholeIterationTime, currentIterationTime, blockAvgTime, changeCellsMetricsLog, iterationMetrics)
+      if (ShouldCheckCorrectness && bestWorkerWhoProposed != defValueWorker) {
+        WorldCorrectnessChecker.checkIteration(iteration)
+      }
+      bestWorkerWhoProposed = defValueWorker
       self ! StartIteration(iteration + 1)
     }
   }
@@ -823,6 +930,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def applyExpandingCells(iteration: Long): Unit = {
+    logConditional("expanding Cells from: " + cellsToTransferReceive.workerId)
     val (outCells, inCells) = balancer.expandCells(
       cellsToTransferReceive.cells,
       cellsToTransferReceive.localCellsToChange,
@@ -839,15 +947,27 @@ class WorkerActor[ConfigType <: XinukConfig](
       val workerInCells = inCells.getOrElse(workerId, ImSet.empty)
       val workerOutToRemove = cellsToTransferReceive.neighboursOutgoingCellsToRemove.getOrElse(workerId, ImSet.empty)
       if (workerId == this.id || workerId == cellsToTransferReceive.workerId || workerOutCells.isEmpty && workerInCells.isEmpty && workerOutToRemove.isEmpty) {
+        logConditional(" -> " + workerId + " send UpdateNeighbourhoodEmpty")
+        msgDelay()
         send(regionRef, workerId, UpdateNeighbourhoodEmpty(iteration, this.id))
       } else {
+        logConditional(" -> " + workerId + " send UpdateNeighbourhood")
+        msgDelay()
         send(regionRef, workerId, UpdateNeighbourhood(iteration, this.id, cellsToTransferReceive.workerId, workerOutCells, workerOutToRemove, workerInCells))
       }
     })
   }
   
+  private def msgDelay(): Unit = {
+    if (BalancingMessageDelay > 0) {
+      Thread.sleep(BalancingMessageDelay)
+    }
+  }
+  
   private def distributeEmptyNeighUpdate(iteration: Long): Unit = {
     sendNeighMsgTo(iteration).foreach { workerId =>
+      logConditional(" -> " + workerId + " send UpdateNeighbourhoodEmpty")
+      msgDelay()
       send(regionRef, workerId, UpdateNeighbourhoodEmpty(iteration, this.id))
     }
   }
@@ -900,6 +1020,10 @@ class WorkerActor[ConfigType <: XinukConfig](
   private def logMetrics(iteration: Long, wholeTime: Long, onlyWorkerTime: Long, lastBlockTime: Double, cellsChanges: String, metrics: Metrics): Unit = {
     logger.info(WorkerActor.MetricsMarker, "{};{};{};{};{};{}", iteration.toString, wholeTime.toString, onlyWorkerTime.toString, lastBlockTime.toString, cellsChanges, metrics: Any)
   }
+  
+  private def logDebugData(iteration: Long, debugData: String, metrics: Metrics): Unit = {
+//    logger.info(WorkerActor.MetricsMarker, "{};{}------;{}", iteration.toString, debugData, metrics: Any)
+  }
 
   private def flatGroup[A](seqs: Seq[Seq[A]])(idExtractor: A => CellId): Map[CellId, Seq[A]] = {
     seqs.flatten.groupBy {
@@ -910,6 +1034,12 @@ class WorkerActor[ConfigType <: XinukConfig](
   private def shuffleUngroup[*, V](groups: Map[*, Seq[V]]): Seq[V] = {
     Random.shuffle(groups.keys.toList).flatMap(k => Random.shuffle(groups(k)))
   }
+
+//  override def receiveRecover: Receive = ???
+//
+//  override def receiveCommand: Receive = ???
+//
+//  override def persistenceId: String = "persistence-id"
 }
 
 object WorkerActor {
