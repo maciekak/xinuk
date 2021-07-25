@@ -16,7 +16,7 @@ final case class RabbitsPlanCreator() extends PlanCreator[RabbitsConfig] {
     cellState.contents match {
       case lettuce: Lettuce => lettucePlanning(iteration, lettuce, neighbourContents)
       case rabbit: Rabbit => {
-        Thread.sleep(2)
+//        Thread.sleep(2)
         rabbitPlanning(rabbit, cellState.signalMap, neighbourContents)
       }
       case _ => (Plans.empty, RabbitsMetrics.empty)
