@@ -13,7 +13,7 @@ final case class MockPlanCreator() extends PlanCreator[MockConfig] {
                           (implicit config: MockConfig): (Plans, MockMetrics) = {
     cellState.contents match {
       case Mock =>
-        Thread.sleep(200)
+        Thread.sleep(50)
         (randomMove(neighbourContents), MockMetrics(1, 0))
       case _ => (Plans.empty, MockMetrics.empty)
     }

@@ -232,9 +232,9 @@ class BalancerAlgo(val worldShard: GridWorldShard,
 
   def findCells(workerId: WorkerId, quantity: Int): CellsToChange = {
 
-    val mask = balancingNeighbours(worldShard.workerId)
+//    val mask = balancingNeighbours(worldShard.workerId)
     //uncomment line below to make tests work
-    //    val mask = balancingNeighbours(workerId)
+        val mask = balancingNeighbours(workerId)
     val gridCells = mutable.Set.empty[GridCellId] ++ worldShard.incomingCells(workerId).asInstanceOf[mutable.Set[GridCellId]] 
     val cellsToRemove = if (shouldGoDepth) takeMaxNCellsInDepth(gridCells, mask, quantity)
                         else takeMaxNCells(gridCells, mask, quantity)

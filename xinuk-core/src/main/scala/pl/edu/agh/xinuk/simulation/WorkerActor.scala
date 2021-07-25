@@ -4,8 +4,8 @@ import akka.actor.{Actor, ActorRef, Props, Stash}
 import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
 import org.slf4j.{Logger, LoggerFactory, MarkerFactory}
 import pl.edu.agh.xinuk.algorithm._
-import pl.edu.agh.xinuk.balancing.{BalancerAlgo, MetricFunctions, StatisticsData, WorldCorrectnessChecker}
-import pl.edu.agh.xinuk.config.XinukConfig
+import pl.edu.agh.xinuk.balancing.{BalancerAlgo, MetricFunctions, RectangleGenerator, StatisticsData, WorldCorrectnessChecker}
+import pl.edu.agh.xinuk.config.{MetricFunType, TestCaseType, XinukConfig}
 import pl.edu.agh.xinuk.gui.GuiActor.GridInfo
 import pl.edu.agh.xinuk.model._
 import pl.edu.agh.xinuk.model.balancing.{BalancerInfo, CellsToExpand}
@@ -26,25 +26,9 @@ class WorkerActor[ConfigType <: XinukConfig](
 
   import pl.edu.agh.xinuk.simulation.WorkerActor._
   
-  val IsDebugMode: Boolean = true
-  val StatisticsDistributionInterval = 10
-  val BalancingIntervalMultiplier = 1
-  val BalancingInterval: Int = StatisticsDistributionInterval * BalancingIntervalMultiplier
-  val ShouldGoDepth: Boolean = true
-  val ShouldUseMetricOnAllFoundCells: Boolean = false
-  val ShouldUpdateMiddlePoint: Boolean = true
-  val ShouldCheckCorrectness: Boolean = true
-  val ShouldLogChanges: Boolean = true
-  val MinimumNumberOfAdjacentCells: Int = 9
-  val MinimumDiffBetweenWorkers: Double = 0.85
-  val AmountCellsDivider = 6
-  val BalancingMessageDelay = 1
-  
+  val BalancingInterval: Int = config.statisticsDistributionInterval * config.balancingIntervalMultiplier
   val AffectedWorkers: Seq[WorkerId] = Seq(WorkerId(2), WorkerId(5))
-  val SlowMultiplier: Double = 0.7
-  val SimulationCase: String = "workerCells"
-  val IsAreaType: Boolean = SimulationCase.contains("area")
-  val SimulationCases: Seq[String] = Seq("noBalancing", "none", "mock", "workerCells", "everyoneDifferentCellTime", "areaMiddle", "areaLongRect", "areaHalf", "areaFreeBorders", "agentType")
+  val IsAreaType: Boolean = config.simulationCase == TestCaseType.AreaMiddle || config.simulationCase == TestCaseType.AreaLongRect || config.simulationCase == TestCaseType.AreaHalf || config.simulationCase == TestCaseType.AreaFreeBorders || config.simulationCase == TestCaseType.AreaSlowBorders
   val DifferentCellTime: ImMap[WorkerId, Double] = ImMap(WorkerId(1) -> 1.2, WorkerId(2) -> 1.1, WorkerId(3) -> 2, WorkerId(4) -> 4, WorkerId(5) -> 5, WorkerId(6) -> 1.4, WorkerId(7) -> 2.5, WorkerId(8) -> 0.9, WorkerId(9) -> 0.3)
 
   val guiActors: mutable.Set[ActorRef] = mutable.Set.empty
@@ -116,36 +100,51 @@ class WorkerActor[ConfigType <: XinukConfig](
       this.worldShard = world
       this.logger = LoggerFactory.getLogger(id.value.toString)
       logger.info("starting")
-      val slowAreaPlace: ImSet[CellId] = SimulationCase match {
-        case "areaMiddle" => ImSet.empty
-        case "areaLongRect" => ImSet.empty
-        case "areaHalf" => ImSet.empty
-        case "areaFreeBorders" => ImSet.empty
+      val slowAreaPlace: ImSet[CellId] = config.simulationCase match {
+        case TestCaseType.AreaMiddle => RectangleGenerator.get(34, 34, 66, 66)
+        case TestCaseType.AreaLongRect => RectangleGenerator.get(21, 5, 45, 95)
+        case TestCaseType.AreaHalf => RectangleGenerator.get(0, 0, 50, 99)
+        case TestCaseType.AreaFreeBorders => RectangleGenerator.get(15, 15, 85, 85)
+        case TestCaseType.AreaSlowBorders => RectangleGenerator.get(0, 0, 99, 99) -- RectangleGenerator.get(15, 15, 85, 85)
         case _ => ImSet.empty
       }
       
-      val beginningCellsMetricsLog = if (ShouldLogChanges) {
-      val onlyCoords = worldShard.localCellIds.map(c => {
-        val gridCell = c.asInstanceOf[GridCellId]
-        (gridCell.x, gridCell.y)
-      })
-      onlyCoords.mkString(world.workerId.value.toString + "->" + this.id.value.toString + "_", "_", "")
-    } else {
-      ""
-    }
+      if (slowAreaPlace.nonEmpty) {
+        logMetrics(0, 1, 0, 0,
+          slowAreaPlace.map(g => {
+            val gridCellId = g.asInstanceOf[GridCellId]
+            (gridCellId.x, gridCellId.y)
+          }).mkString("***_", "_", ""), iterationMetrics)
+      }
+      
+      val metricFun: ((Int, Int), GridCellId) => Double = config.metricFunction match {
+        case MetricFunType.EuclidClose => MetricFunctions.middlePointClose
+        case MetricFunType.EuclidFar => MetricFunctions.middlePointFar
+        case MetricFunType.MaxMin => MetricFunctions.middlePointMaxMin
+      }
+      
+      val beginningCellsMetricsLog = if (config.shouldLogChanges) {
+        val onlyCoords = worldShard.localCellIds.map(c => {
+          val gridCell = c.asInstanceOf[GridCellId]
+          (gridCell.x, gridCell.y)
+        })
+        onlyCoords.mkString(world.workerId.value.toString + "->" + this.id.value.toString + "_", "_", "")
+      } else {
+        ""
+      }
       logMetrics(0, 0, 0, 0, beginningCellsMetricsLog, iterationMetrics)
       this.balancer = new BalancerAlgo(worldShard.asInstanceOf[GridWorldShard], 
-                                       balancerInfo.workersWithMiddlePoints, 
-                                       MetricFunctions.middlePointClose, 
-                                       ShouldGoDepth, 
-                                       ShouldUseMetricOnAllFoundCells,
-                                       ShouldUpdateMiddlePoint,
+                                       balancerInfo.workersWithMiddlePoints,
+                                       metricFun,
+                                       config.shouldGoDepth,
+                                       config.shouldUseMetricOnAllFoundCells,
+                                       config.shouldUpdateMiddlePoint,
                                        IsAreaType, 
                                        slowAreaPlace)
       wholeIterationTimeStart = System.currentTimeMillis()
       wholeSimulationTime = System.currentTimeMillis()
       planCreator.initialize(worldShard)
-      if (ShouldCheckCorrectness) {
+      if (config.shouldCheckCorrectness) {
         WorldCorrectnessChecker.initShards(world, logger, config)
       }
       self ! StartIteration(1)
@@ -170,19 +169,25 @@ class WorkerActor[ConfigType <: XinukConfig](
       context.system.terminate()
 
     case StartIteration(iteration) =>
+      if(iteration % BalancingInterval == 1) {
+        logger.info(iteration.toString + " Started iteration")
+      }
+      if(config.shouldCheckCorrectness && iteration % BalancingInterval == 1) {
+        logMetrics(0, 0, 0, 0, iteration.toString + "\n" + "localCells:\n" + worldShard.localCellIds.toString() + "\n" + "cells:\n" + worldShard.cells.toString() + "\n" + "outgoingCells:\n" + worldShard.outgoingCells.toString() + "\n" + "incomingCells:\n" + worldShard.incomingCells.toString() + "\n" + "cellToWorker:\n" + worldShard.cellToWorker.toString() + "\n", iterationMetrics)
+      }
       wholeIterationTimeStart = System.currentTimeMillis()
       phaseTime = System.currentTimeMillis()
       currentIteration = iteration
       iterationMetrics = emptyMetrics
       val plans: Seq[TargetedPlan] = worldShard.localCellIds.map(worldShard.cells(_)).flatMap(createPlans).toSeq
-      if (AffectedWorkers.contains(this.id)){
-        Thread.sleep((worldShard.localCellIds.size * SlowMultiplier).toInt)
+      if (config.simulationCase == TestCaseType.WorkerCells && AffectedWorkers.contains(this.id)){
+        Thread.sleep((worldShard.localCellIds.size * config.slowMultiplier).toInt)
       }
       if (IsAreaType && balancer.slowAreaSize > 0) {
-        Thread.sleep((balancer.slowAreaSize * SlowMultiplier).toInt)
+        Thread.sleep((balancer.slowAreaSize * config.slowMultiplier).toInt)
       }
-      if (SimulationCase == "everyoneDifferentCellTime") {
-        Thread.sleep((DifferentCellTime(this.id) * SlowMultiplier * worldShard.localCellIds.size).toInt)
+      if (config.simulationCase == TestCaseType.EveryoneDifferentCellTime) {
+        Thread.sleep((DifferentCellTime(this.id) * config.slowMultiplier * worldShard.localCellIds.size).toInt)
       }
       
       val timeDiff = System.currentTimeMillis() - phaseTime
@@ -239,19 +244,22 @@ class WorkerActor[ConfigType <: XinukConfig](
         })
         remoteCellContentsStash.remove(currentIteration)
         guiActors.foreach(_ ! GridInfo(iteration, worldShard.localCellIds.map(worldShard.cells(_)), iterationMetrics))
-        if (iteration == 0) {
+        if (iteration % config.statisticsDistributionInterval == 1) {
           blockAvgTime = currentIterationTime.toDouble
         } else {
-          blockAvgTime = (blockAvgTime * (iteration-1) + currentIterationTime)/iteration
+          val currentDivider = if (iteration % config.statisticsDistributionInterval == 0) config.statisticsDistributionInterval
+                               else iteration % config.statisticsDistributionInterval
+          blockAvgTime = (blockAvgTime * (currentDivider - 1) + currentIterationTime)/currentDivider
         }
         if (iteration % 100 == 0) logger.info(s"finished $iteration")
-        if (SimulationCase != "noBalancing" && iteration % StatisticsDistributionInterval == 0 && iteration > 0) {
-          if(SimulationCase == "mock") {
+        if (config.shouldBalance && iteration % config.statisticsDistributionInterval == 0 && iteration > 0) {
+          if(config.simulationCase == TestCaseType.Mock) {
             worldShard.workerId.value match {
               case 1 => blockAvgTime = worldShard.localCellIds.size * 1.001
               case 2 => blockAvgTime = worldShard.localCellIds.size * 3
               case 3 => blockAvgTime = worldShard.localCellIds.size * 1.002
               case 4 => blockAvgTime = worldShard.localCellIds.size * 1.003
+                
               case 5 => blockAvgTime = worldShard.localCellIds.size * 4
               case 6 => blockAvgTime = worldShard.localCellIds.size * 1.004
               case 7 => blockAvgTime = worldShard.localCellIds.size * 1.005
@@ -295,13 +303,13 @@ class WorkerActor[ConfigType <: XinukConfig](
       //Na pewno nie planTimeAvg
       val sortedTimes = balancer.neighboursPlanAvgTime.filter(n => worldShard.outgoingCells.keySet.contains(n._1))
         .map(n => {
-        if (worldShard.outgoingCells(n._1).size + worldShard.incomingCells(n._1).size < MinimumNumberOfAdjacentCells) {
+        if (worldShard.outgoingCells(n._1).size + worldShard.incomingCells(n._1).size < config.minimumNumberOfAdjacentCells) {
           (0, n._2.actualBlockValue, n._1)
         } else if (n._2.actualBlockValue > blockAvgTime) {
-          if (blockAvgTime / n._2.actualBlockValue <= MinimumDiffBetweenWorkers) (1, n._2.actualBlockValue, n._1)
+          if (blockAvgTime / n._2.actualBlockValue <= config.minimumDiffBetweenWorkers) (1, n._2.actualBlockValue, n._1)
           else (0, n._2.actualBlockValue, n._1)
         } else {
-          if (n._2.actualBlockValue / blockAvgTime <= MinimumDiffBetweenWorkers) (-1, n._2.actualBlockValue, n._1)
+          if (n._2.actualBlockValue / blockAvgTime <= config.minimumDiffBetweenWorkers) (-1, n._2.actualBlockValue, n._1)
           else (0, n._2.actualBlockValue, n._1)
       }
       }).toSeq
@@ -375,6 +383,7 @@ class WorkerActor[ConfigType <: XinukConfig](
     case AcceptProposal(iteration, senderId) =>
       logConditional(" -> " + senderId + " receive AcceptProposal")
       takeCellsFrom = sentProposeTo
+      bestWorkerWhoProposed = defValueWorker
       sentProposeTo = defValueWorker
       sendResignationToRestWorkers(iteration)
       
@@ -442,6 +451,7 @@ class WorkerActor[ConfigType <: XinukConfig](
         applyExpandingCells(iteration)
       } else if (bestWorkerWhoProposed != defValueWorker){
         val cellsToChange = balancer.findCells(bestWorkerWhoProposed, numberOfCellsToGive)
+        
         balancer.shrinkCells(
           cellsToChange.cells,
           cellsToChange.cellsToRemove,
@@ -461,6 +471,10 @@ class WorkerActor[ConfigType <: XinukConfig](
           cellsToChange.cellToWorker,
           cellsToChange.cellNeighbours,
           cellsToChange.neighboursOutgoingCellsToRemove)
+        if(config.shouldCheckCorrectness) {
+          val str = "\nworkerId:\n" + cellsToChange.workerId.toString + "\ncellsToRemove:\n" + cellsToChange.cellsToRemove.toString + "\noldLocalCells:\n" + cellsToChange.oldLocalCells.toString + "\ncells:\n" + cellsToChange.cells.toString + "\nincomingCells:\n" + cellsToChange.incomingCells.toString + "\noutgoingCells:\n" + cellsToChange.outgoingCells.toString + "\ncellToWorker:\n" + cellsToChange.cellToWorker.toString + "\ncellNeighbours:\n" + cellsToChange.cellNeighbours.toString + "\nremainingLocalCells:\n" + cellsToChange.remainingLocalCells.toString + "\nborderOfRemainingCells:\n" + cellsToChange.borderOfRemainingCells.toString + "\noutgoingCellsToRemove:\n" + cellsToChange.outgoingCellsToRemove.toString + "\nnewIncomingCells:\n" + cellsToChange.newIncomingCells.toString + "\nnewOutgoingCells:\n" + cellsToChange.newOutgoingCells.toString + "\nneighboursOutgoingCellsToRemove:\n" + cellsToChange.neighboursOutgoingCellsToRemove.toString + "\n"
+          logMetrics(0, 0, 0, 0, "Cells to move: it: " + iteration.toString + "\n" + str, iterationMetrics)
+        }
         logConditional(" -> " + bestWorkerWhoProposed + " send CellsTransfer")
         msgDelay()
         send(regionRef, bestWorkerWhoProposed, CellsTransfer(iteration, this.id, cellsToSend))
@@ -487,7 +501,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       
     case CellsTransfer(iteration, senderId, cells) =>
       logConditional(" -> " + senderId + " receive CellsTransfer in phase: " + balancingPhase)
-      if(ShouldCheckCorrectness) {
+      if(config.shouldCheckCorrectness) {
         WorldCorrectnessChecker.addChanges((senderId, this.id, cells.localCellsToChange), iteration)
       }
       cellsToTransferReceive = cells
@@ -774,7 +788,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def printAll(iteration: Long, additionMsg: String): Unit = {
-    if(IsDebugMode){
+    if(config.isDebugMode){
       val text = "stash ;;; receive ;;; send - it: " + iteration + "\n" + additionMsg + "\n" + "N: " + neighMsgFromStash(iteration).toString() + ";;;" + receiveNeighMsgFrom(iteration).toString() + ";;;" + sendNeighMsgTo(iteration).toString() + "\n"        + "NAck: " + neighAckMsgFromStash(iteration).toString() + ";;;" + receiveNeighAckMsgFrom(iteration).toString() + ";;;" + sendNeighAckMsgTo(iteration).toString() + "\n"        + "FN: " + fixingNeighAckMsgFromStash(iteration).toString() + ";;;" + receiveFixingNeighAckMsgFrom(iteration).toString() + "\n"        + "S1: " + syncMsgFromStash(iteration).toString() + ";;;" + receiveSyncMsgFrom(iteration).toString() + ";;;" + sendSyncMsgTo(iteration).toString() + "\n"        + "S2: " + sync2MsgFromStash(iteration).toString() + ";;;" + receiveSync2MsgFrom(iteration).toString() + ";;;" + sendSync2MsgTo(iteration).toString() + "\n"
       logger.info(text)
 
@@ -783,7 +797,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def logConditional(info: String): Unit = {
-    if (IsDebugMode) {
+    if (config.isDebugMode) {
       logDebugData(currentIteration, info, emptyMetrics)
       logger.info(info)
     }
@@ -796,7 +810,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       }
     } else if(toTakeCellsFrom.nonEmpty && toTakeCellsFrom.exists(i => !i._2._2)){
       val sendProposeTo = toTakeCellsFrom.filter(i => !i._2._2).maxBy(i => i._2._1)
-      val numberOfCells = ((1.0 - blockAvgTime / sendProposeTo._2._1) / AmountCellsDivider * worldShard.localCellIds.size).toInt
+      val numberOfCells = ((1.0 - blockAvgTime / sendProposeTo._2._1) / config.amountCellsDivider * worldShard.localCellIds.size).toInt
       logConditional(" -> " + sendProposeTo._1 + " send Proposal")
       msgDelay()
       send(regionRef, sendProposeTo._1, Proposal(iteration, this.id, numberOfCells))
@@ -877,7 +891,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       && receiveFixingNeighAckMsgFrom(iteration).size == fixingNeighAckMsgFromStash(iteration).size
       && receiveSyncMsgFrom(iteration).size == syncMsgFromStash(iteration).size
       && receiveSync2MsgFrom(iteration).size == sync2MsgFromStash(iteration).size) {
-      val changeCellsMetricsLog = if (ShouldLogChanges && cellsToTransferReceive != null) {
+      val changeCellsMetricsLog = if (config.shouldLogChanges && cellsToTransferReceive != null) {
         val onlyCoords = cellsToTransferReceive.localCellsToChange.map(c => {
           val gridCell = c.asInstanceOf[GridCellId]
           (gridCell.x, gridCell.y)
@@ -914,7 +928,7 @@ class WorkerActor[ConfigType <: XinukConfig](
       wholeIterationTime = System.currentTimeMillis() - wholeIterationTimeStart
       
       logMetrics(currentIteration, wholeIterationTime, currentIterationTime, blockAvgTime, changeCellsMetricsLog, iterationMetrics)
-      if (ShouldCheckCorrectness && bestWorkerWhoProposed != defValueWorker) {
+      if (config.shouldCheckCorrectness && bestWorkerWhoProposed != defValueWorker) {
         WorldCorrectnessChecker.checkIteration(iteration)
       }
       bestWorkerWhoProposed = defValueWorker
@@ -959,8 +973,8 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def msgDelay(): Unit = {
-    if (BalancingMessageDelay > 0) {
-      Thread.sleep(BalancingMessageDelay)
+    if (config.balancingMessageDelay > 0) {
+      Thread.sleep(config.balancingMessageDelay)
     }
   }
   
@@ -1022,7 +1036,7 @@ class WorkerActor[ConfigType <: XinukConfig](
   }
   
   private def logDebugData(iteration: Long, debugData: String, metrics: Metrics): Unit = {
-//    logger.info(WorkerActor.MetricsMarker, "{};{}------;{}", iteration.toString, debugData, metrics: Any)
+    logger.info(WorkerActor.MetricsMarker, "{};{}------;{}", iteration.toString, debugData, metrics: Any)
   }
 
   private def flatGroup[A](seqs: Seq[Seq[A]])(idExtractor: A => CellId): Map[CellId, Seq[A]] = {

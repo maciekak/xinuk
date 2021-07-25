@@ -20,6 +20,16 @@ object ValueReaders extends FicusInstances with ArbitraryTypeReader {
       override def read(config: Config, path: String): GuiType = GuiType.byName(config.getString(path))
     }
 
+  implicit val testCaseTypeReader: ValueReader[TestCaseType] =
+    new ValueReader[TestCaseType] {
+      override def read(config: Config, path: String): TestCaseType = TestCaseType.byName(config.getString(path))
+    }
+
+  implicit val metricFunctionReader: ValueReader[MetricFunType] =
+    new ValueReader[MetricFunType] {
+      override def read(config: Config, path: String): MetricFunType = MetricFunType.byName(config.getString(path))
+    }
+
   implicit val signalReader: ValueReader[Signal] =
     new ValueReader[Signal] {
       override def read(config: Config, path: String): Signal = Signal(config.getNumber(path).doubleValue())
